@@ -88,18 +88,31 @@ def plot_realized_payout_when_winner(
 
 def plot_pnl_histogram(agent_df: pd.DataFrame, out: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    sns.histplot(agent_df["pnl"], bins=80, ax=axes[0], color="steelblue")
-    axes[0].axvline(0, color="black", linestyle="--", linewidth=1)
-    axes[0].set_title("Agent P&L distribution (overall)")
-    axes[0].set_xlabel("P&L ($)")
+    if agent_df.empty:
+        for ax in axes:
+            ax.text(0.5, 0.5, "No agent data", ha="center", va="center")
+            ax.set_axis_off()
+    else:
+        sns.histplot(agent_df["pnl"], bins=80, ax=axes[0], color="steelblue")
+        axes[0].axvline(0, color="black", linestyle="--", linewidth=1)
+        axes[0].set_title("Agent P&L distribution (overall)")
+        axes[0].set_xlabel("P&L ($)")
 
-    quartiles = pd.qcut(agent_df["starting_balance"], 4, labels=["Q1", "Q2", "Q3", "Q4"])
-    df = agent_df.assign(balance_q=quartiles)
-    sns.violinplot(data=df, x="balance_q", y="roi", ax=axes[1], cut=0)
-    axes[1].axhline(0, color="black", linestyle="--", linewidth=1)
-    axes[1].set_title("ROI by starting-balance quartile")
-    axes[1].set_xlabel("Starting balance quartile (low → high)")
-    axes[1].set_ylabel("ROI")
+        n_balance_levels = agent_df["starting_balance"].nunique(dropna=True)
+        if n_balance_levels > 1:
+            q = min(4, n_balance_levels)
+            quartiles = pd.qcut(
+                agent_df["starting_balance"], q, labels=False, duplicates="drop"
+            )
+            labels = quartiles.map(lambda q: f"Q{int(q) + 1}" if pd.notna(q) else "NA")
+            df = agent_df.assign(balance_q=labels)
+        else:
+            df = agent_df.assign(balance_q="All")
+        sns.violinplot(data=df, x="balance_q", y="roi", ax=axes[1], cut=0)
+        axes[1].axhline(0, color="black", linestyle="--", linewidth=1)
+        axes[1].set_title("ROI by starting-balance cohort")
+        axes[1].set_xlabel("Starting balance cohort")
+        axes[1].set_ylabel("ROI")
     fig.tight_layout()
     fig.savefig(out, dpi=130)
     plt.close(fig)
@@ -108,18 +121,33 @@ def plot_pnl_histogram(agent_df: pd.DataFrame, out: Path) -> None:
 def plot_roi_vs_balance(agent_df: pd.DataFrame, out: Path) -> None:
     df = agent_df.sample(min(20000, len(agent_df)), random_state=0)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(df["starting_balance"], df["roi"], s=4, alpha=0.2)
-    # Simple binned mean (LOESS-style without scipy.loess)
-    bins = np.linspace(df["starting_balance"].min(), df["starting_balance"].max(), 25)
-    df2 = df.assign(bin=pd.cut(df["starting_balance"], bins))
-    binned = df2.groupby("bin", observed=True)["roi"].agg(["mean", "count"]).reset_index()
-    centers = [(b.left + b.right) / 2 for b in binned["bin"]]
-    ax.plot(centers, binned["mean"], color="crimson", linewidth=2, label="binned mean ROI")
-    ax.axhline(0, color="black", linestyle="--", linewidth=1)
-    ax.set_xlabel("Starting balance ($)")
-    ax.set_ylabel("ROI")
-    ax.set_title("ROI vs. starting balance")
-    ax.legend()
+    if df.empty:
+        ax.text(0.5, 0.5, "No agent data", ha="center", va="center")
+        ax.set_axis_off()
+    else:
+        ax.scatter(df["starting_balance"], df["roi"], s=4, alpha=0.2)
+        if df["starting_balance"].nunique(dropna=True) > 1:
+            # Simple binned mean (LOESS-style without scipy.loess)
+            bins = np.linspace(df["starting_balance"].min(), df["starting_balance"].max(), 25)
+            df2 = df.assign(bin=pd.cut(df["starting_balance"], bins, duplicates="drop"))
+            binned = (
+                df2.groupby("bin", observed=True)["roi"]
+                .agg(["mean", "count"])
+                .reset_index()
+            )
+            centers = [(b.left + b.right) / 2 for b in binned["bin"]]
+            ax.plot(
+                centers,
+                binned["mean"],
+                color="crimson",
+                linewidth=2,
+                label="binned mean ROI",
+            )
+            ax.legend()
+        ax.axhline(0, color="black", linestyle="--", linewidth=1)
+        ax.set_xlabel("Starting balance ($)")
+        ax.set_ylabel("ROI")
+        ax.set_title("ROI vs. starting balance")
     fig.tight_layout()
     fig.savefig(out, dpi=130)
     plt.close(fig)
