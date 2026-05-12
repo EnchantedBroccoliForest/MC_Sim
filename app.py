@@ -73,54 +73,167 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
     realized = mean_payout_per_unit_when_winner(terminal_df, trials_df)
     win_freq = winner_frequency_grid(trials_df)
 
-    def hm_json(z, title, colorscale="Viridis", fmt=".3f"):
+    # Compute extra stats for chart annotations
+    gini_overall = float(trials_df["gini_supply"].mean())
+    median_pnl = float(agent_df["pnl"].median())
+    mean_starting = float(agent_df["starting_balance"].mean())
+    n_obs = len(agent_df)
+
+    def titled(title: str, subtitle: str) -> str:
+        # Plotly supports HTML in title text. Subtitle = small grey line below.
+        return (
+            f"<b>{title}</b><br>"
+            f"<span style='font-size:11px;color:#94a3b8'>{subtitle}</span>"
+        )
+
+    def hm_json(
+        z,
+        title,
+        subtitle,
+        colorbar_title,
+        hover_value_label,
+        colorscale="Viridis",
+        fmt=".3f",
+        hover_prefix="",
+        hover_suffix="",
+    ):
+        hover = (
+            "<b>Score: Man City %{y} — Crystal Palace %{x}</b>"
+            f"<br>{hover_value_label}: {hover_prefix}%{{z:{fmt}}}{hover_suffix}"
+            "<extra></extra>"
+        )
         fig = go.Figure(
             data=go.Heatmap(
                 z=z.tolist(),
                 x=COL_LABELS,
                 y=ROW_LABELS,
                 colorscale=colorscale,
-                hovertemplate="MCI %{y} − CRY %{x}<br>value: %{z:" + fmt + "}<extra></extra>",
+                hovertemplate=hover,
+                colorbar=dict(
+                    title=dict(text=colorbar_title, side="right", font=dict(size=11)),
+                    thickness=12,
+                    tickfont=dict(size=10),
+                ),
             )
         ).update_layout(
-            title=title,
-            height=380,
-            margin=dict(l=50, r=20, t=50, b=50),
-            xaxis_title="CRY goals",
-            yaxis_title="MCI goals",
+            title=dict(text=titled(title, subtitle), x=0.02, xanchor="left"),
+            height=410,
+            margin=dict(l=70, r=20, t=80, b=70),
+            xaxis=dict(
+                title=dict(text="Crystal Palace — goals scored", font=dict(size=11)),
+                tickmode="array",
+                tickvals=COL_LABELS,
+                ticktext=COL_LABELS,
+                constrain="domain",
+            ),
+            yaxis=dict(
+                title=dict(text="Manchester City — goals scored", font=dict(size=11)),
+                tickmode="array",
+                tickvals=ROW_LABELS,
+                ticktext=ROW_LABELS,
+                scaleanchor="x",
+                scaleratio=1,
+            ),
         )
         return fig.to_json()
 
-    # PnL histogram
+    # ── Agent P&L histogram ──
     fig_pnl = px.histogram(
-        agent_df, x="pnl", nbins=80, title="Agent P&L Distribution",
+        agent_df, x="pnl", nbins=80,
         color_discrete_sequence=["#4C78A8"],
-    ).update_layout(height=350, margin=dict(l=50, r=20, t=50, b=50),
-                    xaxis_title="P&L ($)", yaxis_title="Count")
-    fig_pnl.add_vline(x=0, line_dash="dash", line_color="black", line_width=1)
+    ).update_layout(
+        title=dict(
+            text=titled(
+                "Agent profit &amp; loss distribution",
+                f"P&amp;L per (agent × trial) — {n_obs:,} observations across {cfg.n_trials} trials",
+            ),
+            x=0.02, xanchor="left",
+        ),
+        height=380,
+        margin=dict(l=70, r=20, t=80, b=70),
+        xaxis_title="Profit / loss per agent ($USD)",
+        yaxis_title="Number of (agent × trial) observations",
+        bargap=0.02,
+    )
+    fig_pnl.update_traces(
+        hovertemplate="P&L: $%{x:.2f}<br>Count: %{y:,}<extra></extra>"
+    )
+    fig_pnl.add_vline(
+        x=0, line_dash="dash", line_color="#94a3b8", line_width=1,
+        annotation_text="break-even", annotation_position="top",
+        annotation_font_color="#94a3b8", annotation_font_size=10,
+    )
+    fig_pnl.add_vline(
+        x=median_pnl, line_dash="dot", line_color="#f59e0b", line_width=1.5,
+        annotation_text=f"median = ${median_pnl:,.2f}", annotation_position="top right",
+        annotation_font_color="#f59e0b", annotation_font_size=10,
+    )
 
-    # Lorenz curve
+    # ── Lorenz curve ──
     pop, share = lorenz_curve(agent_df["terminal_cash"].to_numpy())
+    # Gini = 1 - 2 * area under Lorenz curve (trapezoidal estimate).
+    _trapz = getattr(np, "trapezoid", None) or np.trapz
+    gini_cash = float(1.0 - 2.0 * _trapz(share, pop))
     fig_lorenz = go.Figure()
-    fig_lorenz.add_trace(go.Scatter(x=pop.tolist(), y=share.tolist(), mode="lines",
-                                    name="Terminal cash", line=dict(color="#4C78A8", width=2)))
-    fig_lorenz.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
-                                    name="Perfect equality", line=dict(color="black", dash="dash")))
-    fig_lorenz.update_layout(title="Lorenz Curve — Agent Terminal Cash", height=350,
-                              margin=dict(l=50, r=20, t=50, b=50),
-                              xaxis_title="Cumulative share of agents",
-                              yaxis_title="Cumulative share of cash")
+    fig_lorenz.add_trace(go.Scatter(
+        x=pop.tolist(), y=share.tolist(), mode="lines",
+        name="Actual distribution",
+        line=dict(color="#4C78A8", width=2.5),
+        hovertemplate="Poorest %{x:.0%} of agents<br>own %{y:.1%} of total cash<extra></extra>",
+        fill="tozeroy", fillcolor="rgba(76, 120, 168, 0.15)",
+    ))
+    fig_lorenz.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1], mode="lines",
+        name="Perfect equality",
+        line=dict(color="#94a3b8", dash="dash", width=1.5),
+        hovertemplate="Perfect equality<extra></extra>",
+    ))
+    fig_lorenz.update_layout(
+        title=dict(
+            text=titled(
+                "Inequality of agent terminal cash (Lorenz curve)",
+                f"Gini coefficient = {gini_cash:.3f}  ·  0 = perfect equality, 1 = one agent owns everything",
+            ),
+            x=0.02, xanchor="left",
+        ),
+        height=380,
+        margin=dict(l=70, r=20, t=80, b=70),
+        xaxis=dict(title="Cumulative share of agents (poorest → richest)", tickformat=".0%"),
+        yaxis=dict(title="Cumulative share of terminal cash", tickformat=".0%"),
+        legend=dict(x=0.02, y=0.98, bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+    )
 
-    # ROI vs balance scatter (sampled)
+    # ── ROI vs starting balance scatter ──
     sample = agent_df.sample(min(5000, len(agent_df)), random_state=0)
-    fig_roi = px.scatter(sample, x="starting_balance", y="roi", opacity=0.3,
-                         title="ROI vs Starting Balance",
-                         color_discrete_sequence=["#4C78A8"]).update_layout(
-        height=350, margin=dict(l=50, r=20, t=50, b=50),
-        xaxis_title="Starting balance ($)", yaxis_title="ROI")
-    fig_roi.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
+    fig_roi = px.scatter(
+        sample, x="starting_balance", y="roi", opacity=0.35,
+        color_discrete_sequence=["#4C78A8"],
+    ).update_layout(
+        title=dict(
+            text=titled(
+                "Per-agent return on investment vs. starting balance",
+                f"{len(sample):,} sampled agents  ·  ROI = (terminal cash − starting cash) ÷ starting cash",
+            ),
+            x=0.02, xanchor="left",
+        ),
+        height=380,
+        margin=dict(l=70, r=20, t=80, b=70),
+        xaxis_title="Starting cash ($USD)",
+        yaxis=dict(title="Return on investment (ROI)", tickformat=".0%"),
+    )
+    fig_roi.update_traces(
+        hovertemplate=(
+            "Starting cash: $%{x:,.2f}<br>"
+            "ROI: %{y:.1%}<extra></extra>"
+        )
+    )
+    fig_roi.add_hline(
+        y=0, line_dash="dash", line_color="#94a3b8", line_width=1,
+        annotation_text="break-even (ROI = 0)", annotation_position="top right",
+        annotation_font_color="#94a3b8", annotation_font_size=10,
+    )
 
-    # Trial slider — first 50 trials
+    # ── Per-trial supply slider ──
     slider_trials = sorted(terminal_df["trial_id"].unique())[:50]
     frames = []
     for tid in slider_trials:
@@ -131,20 +244,58 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
             .to_numpy()
         )
         frames.append(go.Frame(
-            data=[go.Heatmap(z=sub.tolist(), x=COL_LABELS, y=ROW_LABELS, colorscale="Viridis")],
+            data=[go.Heatmap(
+                z=sub.tolist(),
+                x=COL_LABELS, y=ROW_LABELS,
+                colorscale="Viridis",
+                hovertemplate=(
+                    "<b>Score: Man City %{y} — Crystal Palace %{x}</b>"
+                    "<br>Final OT supply: %{z:,.2f} units<extra></extra>"
+                ),
+                colorbar=dict(
+                    title=dict(text="OT supply<br>(units)", side="right", font=dict(size=11)),
+                    thickness=12, tickfont=dict(size=10),
+                ),
+            )],
             name=str(tid),
         ))
     init_z = frames[0].data[0].z if frames else mean_supply.tolist()
     fig_slider = go.Figure(
-        data=[go.Heatmap(z=init_z, x=COL_LABELS, y=ROW_LABELS, colorscale="Viridis")],
+        data=[go.Heatmap(
+            z=init_z,
+            x=COL_LABELS, y=ROW_LABELS,
+            colorscale="Viridis",
+            hovertemplate=(
+                "<b>Score: Man City %{y} — Crystal Palace %{x}</b>"
+                "<br>Final OT supply: %{z:,.2f} units<extra></extra>"
+            ),
+            colorbar=dict(
+                title=dict(text="OT supply<br>(units)", side="right", font=dict(size=11)),
+                thickness=12, tickfont=dict(size=10),
+            ),
+        )],
         frames=frames,
     )
     fig_slider.update_layout(
-        title="Per-Trial Final Supply (first 50 trials)",
-        height=430,
-        margin=dict(l=50, r=20, t=50, b=50),
-        xaxis_title="CRY goals",
-        yaxis_title="MCI goals",
+        title=dict(
+            text=titled(
+                "Final outcome-token supply, trial-by-trial",
+                "Use the slider or ▶ Play to inspect one trial at a time (first 50 trials)",
+            ),
+            x=0.02, xanchor="left",
+        ),
+        height=470,
+        margin=dict(l=70, r=20, t=100, b=90),
+        xaxis=dict(
+            title=dict(text="Crystal Palace — goals scored", font=dict(size=11)),
+            tickmode="array", tickvals=COL_LABELS, ticktext=COL_LABELS,
+            constrain="domain",
+        ),
+        yaxis=dict(
+            title=dict(text="Manchester City — goals scored", font=dict(size=11)),
+            tickmode="array", tickvals=ROW_LABELS, ticktext=ROW_LABELS,
+            scaleanchor="x", scaleratio=1,
+        ),
         sliders=[{
             "steps": [
                 {"args": [[f.name], {"frame": {"duration": 0, "redraw": True},
@@ -152,14 +303,14 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
                  "label": f.name, "method": "animate"}
                 for f in frames
             ],
-            "currentvalue": {"prefix": "Trial: "},
+            "currentvalue": {"prefix": "Showing trial #: ", "font": {"size": 12, "color": "#e2e8f0"}},
             "pad": {"t": 50},
         }] if frames else [],
         updatemenus=[{
             "type": "buttons",
             "showactive": False,
-            "y": 1.15,
-            "x": 0.05,
+            "y": 1.13,
+            "x": 0.02,
             "xanchor": "left",
             "buttons": [
                 {"label": "▶ Play", "method": "animate",
@@ -186,10 +337,46 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
             "conservation_error": cons["max_relative_error"],
         },
         "charts": {
-            "supply": hm_json(mean_supply, "Mean Terminal OT Supply"),
-            "payout": hm_json(mean_payout, "Mean Marginal Payout Multiplier", "Magma"),
-            "realized": hm_json(realized, "Realized Payout / Unit (when cell wins)", "Reds", ".1f"),
-            "winfreq": hm_json(win_freq, "Empirical Winner Frequency", "Blues", ".3f"),
+            "supply": hm_json(
+                mean_supply,
+                title="Mean final outcome-token supply per cell",
+                subtitle="Average units of OT minted into each scoreline by trial-end",
+                colorbar_title="Mean OT supply<br>(units)",
+                hover_value_label="Mean supply",
+                fmt=",.2f",
+                hover_suffix=" units",
+            ),
+            "winfreq": hm_json(
+                win_freq,
+                title="Empirical winner frequency per cell",
+                subtitle="Share of trials in which each scoreline was drawn as the winner",
+                colorbar_title="Winner<br>frequency",
+                hover_value_label="Won as outcome in",
+                colorscale="Blues",
+                fmt=".1%",
+                hover_suffix=" of trials",
+            ),
+            "payout": hm_json(
+                mean_payout,
+                title="Mean marginal payout multiplier per cell",
+                subtitle="Expected payout per $1 minted at the current supply (4·x^¾ / 7·x ratio)",
+                colorbar_title="Multiplier<br>(× per $1)",
+                hover_value_label="Marginal payout",
+                colorscale="Magma",
+                fmt=".3f",
+                hover_suffix="× per $1",
+            ),
+            "realized": hm_json(
+                realized,
+                title="Realised payout per OT, given the cell wins",
+                subtitle="Average dollars paid per winning outcome token, conditional on this cell being drawn",
+                colorbar_title="$ per winning<br>OT unit",
+                hover_value_label="Payout if winner",
+                colorscale="Reds",
+                fmt=",.2f",
+                hover_prefix="$",
+                hover_suffix=" / unit",
+            ),
             "pnl": fig_pnl.to_json(),
             "lorenz": fig_lorenz.to_json(),
             "roi": fig_roi.to_json(),

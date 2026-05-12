@@ -673,8 +673,7 @@
         <div class="chart-section-header">
           <h2>Outcome-grid heatmaps</h2>
           <p class="section-desc">
-            Each 8×8 cell is a possible final scoreline (rows = MCI goals, columns = CRY goals).
-            Blue = empirical winner frequency · Viridis = mean OT supply · Magma = marginal payout multiplier · Reds = realised payout per unit when a cell wins.
+            Each 8×8 cell is one possible final scoreline. Rows = Manchester City goals, columns = Crystal Palace goals; both axes run 0, 1, 2, … 6, ≥7. Hover any cell for exact numbers.
           </p>
         </div>
         <div class="chart-grid-2">
@@ -689,8 +688,7 @@
         <div class="chart-section-header">
           <h2>Agent economics</h2>
           <p class="section-desc">
-            Distribution of outcomes across all (agent × trial) pairs. The Lorenz curve shows
-            inequality of terminal cash; the dashed diagonal is perfect equality.
+            How money is distributed across agents. Each chart is pooled over all (agent × trial) observations from this run.
           </p>
         </div>
         <div class="chart-grid-2">
@@ -704,10 +702,9 @@
 
       <div class="chart-section">
         <div class="chart-section-header">
-          <h2>Per-trial supply (drill-down)</h2>
+          <h2>Per-trial drill-down</h2>
           <p class="section-desc">
-            Use the slider or play the animation to inspect the final OT supply grid trial-by-trial
-            for the first 50 trials. Useful for spotting variance between runs.
+            Inspect the final outcome-token supply grid for one individual trial at a time. Useful for seeing how much variance there is between simulated matches.
           </p>
         </div>
         <div class="chart-card"><div id="chart-slider"></div></div>
