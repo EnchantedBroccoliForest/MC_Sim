@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parimutuel Monte Carlo Simulator</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #1a1d27;
+    border-bottom: 1px solid #2d3148;
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 1.25rem; font-weight: 600; color: #fff; }
+  header span { font-size: 0.8rem; color: #64748b; background: #2d3148; padding: 2px 8px; border-radius: 12px; }
+
+  .layout {
+    display: flex;
+    min-height: calc(100vh - 61px);
+  }
+
+  /* ── Sidebar ── */
+  aside {
+    width: 300px;
+    flex-shrink: 0;
+    background: #1a1d27;
+    border-right: 1px solid #2d3148;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .section-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin: 20px 0 10px;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  .field { margin-bottom: 14px; }
+  label { display: block; font-size: 0.78rem; color: #94a3b8; margin-bottom: 4px; }
+  input[type="number"], select {
+    width: 100%;
+    background: #0f1117;
+    border: 1px solid #2d3148;
+    border-radius: 6px;
+    color: #e2e8f0;
+    padding: 7px 10px;
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="number"]:focus, select:focus { border-color: #6366f1; }
+  select option { background: #1a1d27; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .run-btn {
+    margin-top: auto;
+    padding-top: 24px;
+    border-top: 1px solid #2d3148;
+  }
+  button#runBtn {
+    width: 100%;
+    background: #6366f1;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 11px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  button#runBtn:hover { background: #4f46e5; }
+  button#runBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Main ── */
+  main {
+    flex: 1;
+    padding: 28px 32px;
+    overflow-y: auto;
+  }
+
+  /* ── Progress ── */
+  #progressWrap {
+    display: none;
+    margin-bottom: 28px;
+    background: #1a1d27;
+    border: 1px solid #2d3148;
+    border-radius: 10px;
+    padding: 20px 24px;
+  }
+  #progressWrap.visible { display: block; }
+  .prog-label { font-size: 0.85rem; color: #94a3b8; margin-bottom: 10px; }
+  .prog-label span { color: #e2e8f0; font-weight: 600; }
+  .prog-bar-bg {
+    background: #2d3148;
+    border-radius: 99px;
+    height: 8px;
+    overflow: hidden;
+  }
+  .prog-bar {
+    background: linear-gradient(90deg, #6366f1, #818cf8);
+    height: 100%;
+    width: 0%;
+    border-radius: 99px;
+    transition: width 0.3s ease;
+  }
+
+  /* ── Error ── */
+  #errorBox {
+    display: none;
+    background: #3b1f1f;
+    border: 1px solid #7f1d1d;
+    border-radius: 8px;
+    padding: 14px 18px;
+    color: #fca5a5;
+    font-size: 0.875rem;
+    margin-bottom: 20px;
+  }
+  #errorBox.visible { display: block; }
+
+  /* ── KPI cards ── */
+  #kpiGrid {
+    display: none;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  #kpiGrid.visible { display: grid; }
+
+  .kpi-card {
+    background: #1a1d27;
+    border: 1px solid #2d3148;
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .kpi-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin-bottom: 6px; }
+  .kpi-value { font-size: 1.45rem; font-weight: 700; color: #f1f5f9; }
+  .kpi-value.positive { color: #4ade80; }
+  .kpi-value.negative { color: #f87171; }
+
+  /* ── Charts ── */
+  #chartsWrap { display: none; }
+  #chartsWrap.visible { display: block; }
+
+  .chart-section { margin-bottom: 36px; }
+  .chart-section h2 {
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #2d3148;
+  }
+
+  .chart-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .chart-grid-2-1 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+
+  .chart-card {
+    background: #1a1d27;
+    border: 1px solid #2d3148;
+    border-radius: 10px;
+    padding: 4px;
+    overflow: hidden;
+  }
+
+  /* Plotly dark overrides */
+  .chart-card .js-plotly-plot .plotly { background: transparent !important; }
+
+  /* ── Empty state ── */
+  #emptyState {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 50vh;
+    color: #475569;
+    gap: 14px;
+  }
+  #emptyState svg { opacity: 0.4; }
+  #emptyState p { font-size: 1rem; }
+
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    aside { width: 100%; border-right: none; border-bottom: 1px solid #2d3148; }
+    .chart-grid-2, .chart-grid-2-1 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Parimutuel Monte Carlo</h1>
+  <span>MCI vs CRY · 8×8 grid</span>
+</header>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside>
+    <div class="section-label">Simulation</div>
+    <div class="field row2">
+      <div>
+        <label>Trials</label>
+        <input type="number" id="n_trials" value="200" min="1" max="5000">
+      </div>
+      <div>
+        <label>Agents</label>
+        <input type="number" id="n_agents" value="100" min="1" max="1000">
+      </div>
+    </div>
+    <div class="field">
+      <label>Random seed</label>
+      <input type="number" id="seed" value="1234">
+    </div>
+
+    <div class="section-label">Agent balances ($)</div>
+    <div class="field row2">
+      <div>
+        <label>Min</label>
+        <input type="number" id="balance_min" value="50" min="0">
+      </div>
+      <div>
+        <label>Max</label>
+        <input type="number" id="balance_max" value="5000" min="0">
+      </div>
+    </div>
+
+    <div class="section-label">House seed market cap ($)</div>
+    <div class="field row2">
+      <div>
+        <label>Min</label>
+        <input type="number" id="init_mcap_min" value="0.1" min="0" step="0.01">
+      </div>
+      <div>
+        <label>Max</label>
+        <input type="number" id="init_mcap_max" value="10" min="0">
+      </div>
+    </div>
+
+    <div class="section-label">Strategy</div>
+    <div class="field">
+      <label>Agent strategy</label>
+      <select id="agent_strategy">
+        <option value="uniform_random">Uniform random</option>
+        <option value="weighted_by_marginal_payout">Weighted by marginal payout</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Winner distribution</label>
+      <select id="winner_distribution">
+        <option value="realistic">Realistic (Poisson)</option>
+        <option value="uniform">Uniform</option>
+      </select>
+    </div>
+
+    <div class="run-btn">
+      <button id="runBtn" onclick="startRun()">▶ Run Simulation</button>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main>
+    <!-- Progress -->
+    <div id="progressWrap">
+      <div class="prog-label">Running… <span id="progMsg"></span></div>
+      <div class="prog-bar-bg"><div class="prog-bar" id="progBar"></div></div>
+    </div>
+
+    <!-- Error -->
+    <div id="errorBox"></div>
+
+    <!-- Empty state -->
+    <div id="emptyState">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+      <p>Configure parameters and click <strong>Run Simulation</strong></p>
+    </div>
+
+    <!-- KPI cards -->
+    <div id="kpiGrid">
+      <div class="kpi-card"><div class="kpi-label">Trials</div><div class="kpi-value" id="kpi-trials">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Mean pool</div><div class="kpi-value" id="kpi-pool">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Mean payout/unit</div><div class="kpi-value" id="kpi-ppu">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Mean agent P&L</div><div class="kpi-value" id="kpi-pnl">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Median ROI</div><div class="kpi-value" id="kpi-roi">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Agents profitable</div><div class="kpi-value" id="kpi-pos">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Mean house P&L</div><div class="kpi-value" id="kpi-house">—</div></div>
+      <div class="kpi-card"><div class="kpi-label">Mean Gini supply</div><div class="kpi-value" id="kpi-gini">—</div></div>
+    </div>
+
+    <!-- Charts -->
+    <div id="chartsWrap">
+      <div class="chart-section">
+        <h2>Grid heatmaps</h2>
+        <div class="chart-grid-2">
+          <div class="chart-card"><div id="chart-supply"></div></div>
+          <div class="chart-card"><div id="chart-winfreq"></div></div>
+          <div class="chart-card"><div id="chart-payout"></div></div>
+          <div class="chart-card"><div id="chart-realized"></div></div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <h2>Agent economics</h2>
+        <div class="chart-grid-2">
+          <div class="chart-card"><div id="chart-pnl"></div></div>
+          <div class="chart-card"><div id="chart-lorenz"></div></div>
+        </div>
+        <div style="margin-top:16px">
+          <div class="chart-card"><div id="chart-roi"></div></div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <h2>Per-trial supply</h2>
+        <div class="chart-card"><div id="chart-slider"></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+const PLOTLY_LAYOUT_PATCH = {
+  paper_bgcolor: "#1a1d27",
+  plot_bgcolor: "#1a1d27",
+  font: { color: "#94a3b8", size: 11 },
+  title: { font: { color: "#e2e8f0", size: 13 } },
+  xaxis: { gridcolor: "#2d3148", zerolinecolor: "#2d3148" },
+  yaxis: { gridcolor: "#2d3148", zerolinecolor: "#2d3148" },
+};
+
+function patchLayout(fig) {
+  fig.layout = Object.assign({}, fig.layout, PLOTLY_LAYOUT_PATCH);
+  if (fig.layout.xaxis) fig.layout.xaxis = Object.assign({}, PLOTLY_LAYOUT_PATCH.xaxis, fig.layout.xaxis, { gridcolor: "#2d3148" });
+  if (fig.layout.yaxis) fig.layout.yaxis = Object.assign({}, PLOTLY_LAYOUT_PATCH.yaxis, fig.layout.yaxis, { gridcolor: "#2d3148" });
+  fig.layout.paper_bgcolor = "#1a1d27";
+  fig.layout.plot_bgcolor = "#1a1d27";
+  fig.layout.font = { color: "#94a3b8", size: 11 };
+  if (fig.layout.title) {
+    if (typeof fig.layout.title === "string") {
+      fig.layout.title = { text: fig.layout.title, font: { color: "#e2e8f0", size: 13 } };
+    } else {
+      fig.layout.title.font = { color: "#e2e8f0", size: 13 };
+    }
+  }
+  return fig;
+}
+
+function renderChart(id, jsonStr) {
+  const fig = JSON.parse(jsonStr);
+  patchLayout(fig);
+  Plotly.newPlot(id, fig.data, fig.layout, PLOTLY_CONFIG);
+}
+
+function fmt$(v) { return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtPct(v) { return (v * 100).toFixed(1) + "%"; }
+function fmtNum(v) { return v.toFixed(3); }
+
+async function startRun() {
+  const btn = document.getElementById("runBtn");
+  btn.disabled = true;
+
+  // hide old results
+  document.getElementById("emptyState").style.display = "none";
+  document.getElementById("kpiGrid").classList.remove("visible");
+  document.getElementById("chartsWrap").classList.remove("visible");
+  document.getElementById("errorBox").classList.remove("visible");
+
+  const params = {
+    n_trials: +document.getElementById("n_trials").value,
+    n_agents: +document.getElementById("n_agents").value,
+    seed: +document.getElementById("seed").value,
+    balance_min: +document.getElementById("balance_min").value,
+    balance_max: +document.getElementById("balance_max").value,
+    init_mcap_min: +document.getElementById("init_mcap_min").value,
+    init_mcap_max: +document.getElementById("init_mcap_max").value,
+    agent_strategy: document.getElementById("agent_strategy").value,
+    winner_distribution: document.getElementById("winner_distribution").value,
+  };
+
+  let runId;
+  try {
+    const res = await fetch("/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    const data = await res.json();
+    if (!res.ok) { showError(data.error || "Server error"); btn.disabled = false; return; }
+    runId = data.run_id;
+  } catch (e) {
+    showError("Failed to start simulation: " + e.message);
+    btn.disabled = false;
+    return;
+  }
+
+  // Show progress
+  const progWrap = document.getElementById("progressWrap");
+  const progBar = document.getElementById("progBar");
+  const progMsg = document.getElementById("progMsg");
+  progWrap.classList.add("visible");
+  progBar.style.width = "0%";
+
+  await new Promise((resolve) => {
+    const es = new EventSource(`/progress/${runId}`);
+    es.onmessage = (e) => {
+      const d = JSON.parse(e.data);
+      progBar.style.width = d.progress + "%";
+      progMsg.textContent = d.message || d.progress + "%";
+      if (d.status === "done") { es.close(); resolve(); }
+      if (d.error) { es.close(); showError(d.error); resolve(); }
+    };
+    es.onerror = () => { es.close(); resolve(); };
+  });
+
+  progWrap.classList.remove("visible");
+
+  // Fetch results
+  let result;
+  try {
+    const res = await fetch(`/result/${runId}`);
+    result = await res.json();
+    if (!res.ok) { showError(result.error || "Failed to fetch results"); btn.disabled = false; return; }
+  } catch (e) {
+    showError("Failed to load results: " + e.message);
+    btn.disabled = false;
+    return;
+  }
+
+  // KPIs
+  const k = result.kpis;
+  document.getElementById("kpi-trials").textContent = k.n_trials.toLocaleString();
+  document.getElementById("kpi-pool").textContent = fmt$(k.mean_pool);
+  document.getElementById("kpi-ppu").textContent = fmt$(k.mean_ppu);
+
+  const pnlEl = document.getElementById("kpi-pnl");
+  pnlEl.textContent = fmt$(k.mean_pnl);
+  pnlEl.className = "kpi-value " + (k.mean_pnl >= 0 ? "positive" : "negative");
+
+  const roiEl = document.getElementById("kpi-roi");
+  roiEl.textContent = fmtPct(k.median_roi);
+  roiEl.className = "kpi-value " + (k.median_roi >= 0 ? "positive" : "negative");
+
+  document.getElementById("kpi-pos").textContent = fmtPct(k.pct_pos);
+
+  const houseEl = document.getElementById("kpi-house");
+  houseEl.textContent = fmt$(k.mean_house_pnl);
+  houseEl.className = "kpi-value " + (k.mean_house_pnl >= 0 ? "positive" : "negative");
+
+  document.getElementById("kpi-gini").textContent = fmtNum(k.mean_gini);
+
+  document.getElementById("kpiGrid").classList.add("visible");
+
+  // Charts
+  const c = result.charts;
+  renderChart("chart-supply", c.supply);
+  renderChart("chart-winfreq", c.winfreq);
+  renderChart("chart-payout", c.payout);
+  renderChart("chart-realized", c.realized);
+  renderChart("chart-pnl", c.pnl);
+  renderChart("chart-lorenz", c.lorenz);
+  renderChart("chart-roi", c.roi);
+  renderChart("chart-slider", c.slider);
+
+  document.getElementById("chartsWrap").classList.add("visible");
+  btn.disabled = false;
+}
+
+function showError(msg) {
+  const el = document.getElementById("errorBox");
+  el.textContent = "Error: " + msg;
+  el.classList.add("visible");
+}
+</script>
+</body>
+</html>
