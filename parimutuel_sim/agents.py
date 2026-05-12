@@ -12,7 +12,8 @@ from .meta_trades import MONEYLINE_KEYS
 
 META_STRATEGIES = ("moneyline_uniform", "moneyline_weighted")
 CELL_STRATEGIES = ("uniform_random", "weighted_by_marginal_payout")
-ALL_STRATEGIES = CELL_STRATEGIES + META_STRATEGIES
+MIXED_STRATEGY = "mixed"
+ALL_STRATEGIES = CELL_STRATEGIES + META_STRATEGIES + (MIXED_STRATEGY,)
 
 
 @dataclass
@@ -22,6 +23,9 @@ class Agent:
     cash: float
     holdings: Dict[Tuple[int, int], float] = field(default_factory=dict)
     terminal_cash: float = 0.0
+    # Per-agent strategy. Assigned after construction (see assign_strategies).
+    # Always one of CELL_STRATEGIES | META_STRATEGIES — never "mixed".
+    strategy: str = ""
 
     def add_holding(self, cell: Tuple[int, int], units: float) -> None:
         self.holdings[cell] = self.holdings.get(cell, 0.0) + units
@@ -137,3 +141,38 @@ def make_agents(
         Agent(agent_id=i, starting_balance=float(b), cash=float(b))
         for i, b in enumerate(balances)
     ]
+
+
+def assign_strategies(
+    agents: list[Agent],
+    strategy: str,
+    rng: np.random.Generator,
+    meta_agent_fraction: float = 0.8,
+    cell_strategy: str = "uniform_random",
+    meta_strategy: str = "moneyline_uniform",
+) -> None:
+    """Set ``agent.strategy`` on every agent.
+
+    For non-mixed strategies all agents share the configured value and no RNG
+    is consumed (preserving byte-for-byte parity with single-strategy runs).
+    For ``strategy == "mixed"``, each agent independently picks the meta
+    sub-strategy with probability ``meta_agent_fraction`` and the cell
+    sub-strategy otherwise.
+    """
+    if strategy == MIXED_STRATEGY:
+        if cell_strategy not in CELL_STRATEGIES:
+            raise ValueError(f"cell_strategy must be one of {CELL_STRATEGIES}, got {cell_strategy!r}")
+        if meta_strategy not in META_STRATEGIES:
+            raise ValueError(f"meta_strategy must be one of {META_STRATEGIES}, got {meta_strategy!r}")
+        if not (0.0 <= meta_agent_fraction <= 1.0):
+            raise ValueError(f"meta_agent_fraction must be in [0, 1], got {meta_agent_fraction}")
+        if not agents:
+            return
+        picks = rng.random(size=len(agents)) < meta_agent_fraction
+        for a, is_meta in zip(agents, picks):
+            a.strategy = meta_strategy if is_meta else cell_strategy
+        return
+    if strategy not in CELL_STRATEGIES and strategy not in META_STRATEGIES:
+        raise ValueError(f"Unknown strategy: {strategy!r}")
+    for a in agents:
+        a.strategy = strategy
