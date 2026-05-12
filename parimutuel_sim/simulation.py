@@ -31,6 +31,28 @@ class SimConfig:
     seed: int = 0
     log_events_for_first_k: int = 10
 
+    def __post_init__(self):
+        if self.n_agents < 0:
+            raise ValueError("n_agents must be >= 0")
+        if self.n_trials <= 0:
+            raise ValueError("n_trials must be > 0")
+        if self.balance_min < 0:
+            raise ValueError("balance_min must be >= 0")
+        if self.balance_max < self.balance_min:
+            raise ValueError("balance_max must be >= balance_min")
+        if self.init_mcap_min < 0 or self.init_mcap_max < 0:
+            raise ValueError("init_mcap_min and init_mcap_max must be >= 0")
+        if self.init_mcap_max < self.init_mcap_min:
+            raise ValueError("init_mcap_max must be >= init_mcap_min")
+        if self.min_mint < 0:
+            raise ValueError("min_mint must be >= 0")
+        if self.max_per_mint <= 0:
+            raise ValueError("max_per_mint must be > 0")
+        if self.min_mint_threshold < 0:
+            raise ValueError("min_mint_threshold must be >= 0")
+        if self.log_events_for_first_k < 0:
+            raise ValueError("log_events_for_first_k must be >= 0")
+
 
 @dataclass
 class TrialResult:

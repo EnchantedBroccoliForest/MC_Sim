@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+from parimutuel_sim.analytics import AGENT_PNL_COLUMNS, build_agent_pnl_df
 from parimutuel_sim.market import (
     GRID_SIZE,
     MarketState,
@@ -18,7 +19,8 @@ from parimutuel_sim.market import (
     supply_for_mcap,
 )
 from parimutuel_sim.settlement import settle
-from parimutuel_sim.simulation import SimConfig, run_one_trial
+from parimutuel_sim.simulation import SimConfig, run_monte_carlo, run_one_trial
+from parimutuel_sim.viz import plot_pnl_histogram, plot_roi_vs_balance
 
 
 def test_mint_from_zero():
@@ -152,3 +154,51 @@ def test_supply_for_mcap_inverse():
     for m in [0.001, 0.1, 1.0, 100.0]:
         x = supply_for_mcap(m)
         assert math.isclose(mcap(x), m, rel_tol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_per_mint": 0.0},
+        {"max_per_mint": -1.0},
+        {"min_mint_threshold": -0.01},
+        {"balance_min": -1.0},
+        {"balance_min": 10.0, "balance_max": 1.0},
+        {"n_trials": 0},
+    ],
+)
+def test_invalid_sim_config_rejected(kwargs):
+    """Invalid configs fail fast instead of entering the mint loop."""
+    with pytest.raises(ValueError):
+        SimConfig(**kwargs)
+
+
+def test_negative_seed_range_rejected():
+    """Negative seed market caps would create NaN supplies."""
+    with pytest.raises(ValueError):
+        MarketState(init_mcap_min=-1.0, init_mcap_max=1.0)
+
+
+def test_zero_agent_pnl_dataframe_has_schema():
+    """Zero-agent trials still produce an empty table with expected columns."""
+    cfg = SimConfig(n_agents=0, n_trials=1, seed=123)
+    trials = list(run_monte_carlo(cfg, verbose=False))
+    agent_df = build_agent_pnl_df(trials)
+
+    assert agent_df.empty
+    assert list(agent_df.columns) == AGENT_PNL_COLUMNS
+
+
+def test_plots_handle_constant_starting_balance(tmp_path):
+    """Constant balances should not crash qcut/cut-based plots."""
+    cfg = SimConfig(n_agents=5, balance_min=100.0, balance_max=100.0, n_trials=1, seed=123)
+    trials = list(run_monte_carlo(cfg, verbose=False))
+    agent_df = build_agent_pnl_df(trials)
+
+    pnl_out = tmp_path / "pnl.png"
+    roi_out = tmp_path / "roi.png"
+    plot_pnl_histogram(agent_df, pnl_out)
+    plot_roi_vs_balance(agent_df, roi_out)
+
+    assert pnl_out.exists()
+    assert roi_out.exists()

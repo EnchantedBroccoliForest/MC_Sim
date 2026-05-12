@@ -9,6 +9,17 @@ import pandas as pd
 
 from .market import GRID_SIZE, mcap
 
+AGENT_PNL_COLUMNS = [
+    "trial_id",
+    "agent_id",
+    "starting_balance",
+    "terminal_cash",
+    "pnl",
+    "roi",
+    "cells_held",
+    "held_winner_units",
+]
+
 
 def gini(x: np.ndarray) -> float:
     """Standard Gini coefficient. Returns 0 for all-equal arrays."""
@@ -55,7 +66,7 @@ def build_agent_pnl_df(trials: Iterable) -> pd.DataFrame:
                     "held_winner_units": a.holdings.get(t.winner, 0.0),
                 }
             )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=AGENT_PNL_COLUMNS)
 
 
 def build_trials_df(trials: Iterable) -> pd.DataFrame:

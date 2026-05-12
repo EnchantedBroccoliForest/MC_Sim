@@ -72,6 +72,8 @@ class MarketState:
     init_supply: np.ndarray = field(init=False)
 
     def __post_init__(self):
+        if self.init_mcap_min < 0 or self.init_mcap_max < 0:
+            raise ValueError("init_mcap_min and init_mcap_max must be >= 0")
         if self.init_mcap_max < self.init_mcap_min:
             raise ValueError("init_mcap_max must be >= init_mcap_min")
         if self.init_mcap_max == 0.0 and self.init_mcap_min == 0.0:

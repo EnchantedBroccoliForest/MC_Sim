@@ -58,22 +58,25 @@ def parse_args(argv=None) -> SimConfig:
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
-    cfg = SimConfig(
-        n_agents=args.n_agents,
-        balance_min=args.balance_min,
-        balance_max=args.balance_max,
-        n_trials=args.n_trials,
-        init_mcap_min=args.init_mcap_min,
-        init_mcap_max=args.init_mcap_max,
-        winner_mode=args.winner_distribution,
-        strategy=args.agent_strategy,
-        min_mint=args.min_mint,
-        max_per_mint=args.max_per_mint,
-        min_mint_threshold=args.min_mint_threshold,
-        refund_on_empty=args.refund_on_empty_winner,
-        seed=args.seed,
-        log_events_for_first_k=args.log_events_for_first_k,
-    )
+    try:
+        cfg = SimConfig(
+            n_agents=args.n_agents,
+            balance_min=args.balance_min,
+            balance_max=args.balance_max,
+            n_trials=args.n_trials,
+            init_mcap_min=args.init_mcap_min,
+            init_mcap_max=args.init_mcap_max,
+            winner_mode=args.winner_distribution,
+            strategy=args.agent_strategy,
+            min_mint=args.min_mint,
+            max_per_mint=args.max_per_mint,
+            min_mint_threshold=args.min_mint_threshold,
+            refund_on_empty=args.refund_on_empty_winner,
+            seed=args.seed,
+            log_events_for_first_k=args.log_events_for_first_k,
+        )
+    except ValueError as exc:
+        p.error(str(exc))
     return cfg, args
 
 
