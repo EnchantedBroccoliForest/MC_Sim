@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Monte Carlo run artifacts (regenerate via `python -m parimutuel_sim.cli`)
+outputs/runs/
+
+# Keep a sample run if explicitly committed
+!outputs/runs/.gitkeep

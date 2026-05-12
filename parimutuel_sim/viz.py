@@ -1,0 +1,262 @@
+"""Static plots and interactive HTML dashboard."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import seaborn as sns
+from plotly.subplots import make_subplots
+
+from .analytics import (
+    lorenz_curve,
+    mean_marginal_payout_grid,
+    mean_payout_per_unit_when_winner,
+    mean_terminal_supply_grid,
+    winner_frequency_grid,
+)
+from .market import GRID_SIZE
+
+ROW_LABELS = ["0", "1", "2", "3", "4", "5", "6", "≥7"]
+COL_LABELS = ["0", "1", "2", "3", "4", "5", "6", "≥7"]
+
+
+def _heatmap(ax, grid, title, cmap="viridis", fmt=".2f", log_color=False):
+    if log_color:
+        norm = matplotlib.colors.LogNorm(
+            vmin=max(np.nanmin(grid[grid > 0]) if np.any(grid > 0) else 1e-6, 1e-6),
+            vmax=max(np.nanmax(grid), 1e-6),
+        )
+        sns.heatmap(
+            grid, ax=ax, cmap=cmap, norm=norm,
+            xticklabels=COL_LABELS, yticklabels=ROW_LABELS,
+            cbar_kws={"label": "log scale"}, annot=False,
+        )
+    else:
+        sns.heatmap(
+            grid, ax=ax, cmap=cmap, annot=True, fmt=fmt,
+            xticklabels=COL_LABELS, yticklabels=ROW_LABELS,
+        )
+    ax.set_xlabel("CRY goals")
+    ax.set_ylabel("MCI goals")
+    ax.set_title(title)
+
+
+def plot_mean_terminal_supply(terminal_df: pd.DataFrame, out: Path) -> None:
+    grid = mean_terminal_supply_grid(terminal_df)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    _heatmap(ax, grid, "Mean terminal OT supply (log color)", log_color=True)
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_mean_marginal_payout(terminal_df: pd.DataFrame, out: Path) -> None:
+    """Mean marginal_payout heatmap; reverse colour so higher payout looks 'hotter'."""
+    grid = mean_marginal_payout_grid(terminal_df)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    _heatmap(ax, grid, "Mean marginal payout multiplier", cmap="magma_r")
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_realized_payout_when_winner(
+    terminal_df: pd.DataFrame, trials_df: pd.DataFrame, out: Path
+) -> None:
+    grid = mean_payout_per_unit_when_winner(terminal_df, trials_df)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    sns.heatmap(
+        grid, ax=ax, cmap="rocket_r", annot=True, fmt=".1f",
+        xticklabels=COL_LABELS, yticklabels=ROW_LABELS,
+        cbar_kws={"label": "$ per unit"},
+    )
+    ax.set_xlabel("CRY goals")
+    ax.set_ylabel("MCI goals")
+    ax.set_title("Realized payout per unit (avg over trials where cell won)")
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_pnl_histogram(agent_df: pd.DataFrame, out: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    sns.histplot(agent_df["pnl"], bins=80, ax=axes[0], color="steelblue")
+    axes[0].axvline(0, color="black", linestyle="--", linewidth=1)
+    axes[0].set_title("Agent P&L distribution (overall)")
+    axes[0].set_xlabel("P&L ($)")
+
+    quartiles = pd.qcut(agent_df["starting_balance"], 4, labels=["Q1", "Q2", "Q3", "Q4"])
+    df = agent_df.assign(balance_q=quartiles)
+    sns.violinplot(data=df, x="balance_q", y="roi", ax=axes[1], cut=0)
+    axes[1].axhline(0, color="black", linestyle="--", linewidth=1)
+    axes[1].set_title("ROI by starting-balance quartile")
+    axes[1].set_xlabel("Starting balance quartile (low → high)")
+    axes[1].set_ylabel("ROI")
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_roi_vs_balance(agent_df: pd.DataFrame, out: Path) -> None:
+    df = agent_df.sample(min(20000, len(agent_df)), random_state=0)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(df["starting_balance"], df["roi"], s=4, alpha=0.2)
+    # Simple binned mean (LOESS-style without scipy.loess)
+    bins = np.linspace(df["starting_balance"].min(), df["starting_balance"].max(), 25)
+    df2 = df.assign(bin=pd.cut(df["starting_balance"], bins))
+    binned = df2.groupby("bin", observed=True)["roi"].agg(["mean", "count"]).reset_index()
+    centers = [(b.left + b.right) / 2 for b in binned["bin"]]
+    ax.plot(centers, binned["mean"], color="crimson", linewidth=2, label="binned mean ROI")
+    ax.axhline(0, color="black", linestyle="--", linewidth=1)
+    ax.set_xlabel("Starting balance ($)")
+    ax.set_ylabel("ROI")
+    ax.set_title("ROI vs. starting balance")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_lorenz(agent_df: pd.DataFrame, out: Path) -> None:
+    pop, share = lorenz_curve(agent_df["terminal_cash"].to_numpy())
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(pop, share, color="steelblue", linewidth=2, label="terminal cash")
+    ax.plot([0, 1], [0, 1], color="black", linestyle="--", label="equality")
+    ax.fill_between(pop, share, pop, alpha=0.15, color="steelblue")
+    ax.set_xlabel("Cumulative share of agents")
+    ax.set_ylabel("Cumulative share of terminal cash")
+    ax.set_title("Lorenz curve — agent terminal cash")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def plot_winner_vs_supply(
+    terminal_df: pd.DataFrame, trials_df: pd.DataFrame, out: Path
+) -> None:
+    win_freq = winner_frequency_grid(trials_df).flatten()
+    mean_supply = mean_terminal_supply_grid(terminal_df).flatten()
+    if mean_supply.sum() > 0:
+        supply_share = mean_supply / mean_supply.sum()
+    else:
+        supply_share = mean_supply
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(supply_share, win_freq, s=30, alpha=0.7)
+    lim = max(supply_share.max(), win_freq.max()) * 1.1 + 1e-9
+    ax.plot([0, lim], [0, lim], "--", color="grey", label="x=y")
+    ax.set_xlabel("Mean supply share of cell")
+    ax.set_ylabel("Empirical win frequency")
+    ax.set_title("Where agents put capital vs. where wins land")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out, dpi=130)
+    plt.close(fig)
+
+
+def build_dashboard(
+    terminal_df: pd.DataFrame,
+    trials_df: pd.DataFrame,
+    agent_df: pd.DataFrame,
+    out: Path,
+) -> None:
+    """Single interactive HTML report with KPIs + heatmaps + slider."""
+
+    mean_supply = mean_terminal_supply_grid(terminal_df)
+    mean_payout = mean_marginal_payout_grid(terminal_df)
+    realized = mean_payout_per_unit_when_winner(terminal_df, trials_df)
+    win_freq = winner_frequency_grid(trials_df)
+
+    kpi_html = f"""
+    <h2>Run summary</h2>
+    <ul>
+      <li>Trials: <b>{len(trials_df)}</b></li>
+      <li>Agents per trial: <b>{int(trials_df['n_agents'].mean())}</b></li>
+      <li>Mean total pool: <b>${trials_df['total_pool'].mean():,.2f}</b></li>
+      <li>Mean payout-per-unit (winner): <b>${trials_df['payout_per_unit_W'].mean():,.2f}</b></li>
+      <li>Mean agent P&L: <b>${agent_df['pnl'].mean():,.2f}</b></li>
+      <li>Median agent ROI: <b>{agent_df['roi'].median():.2%}</b></li>
+      <li>% agents finishing positive: <b>{(agent_df['pnl'] > 0).mean():.1%}</b></li>
+      <li>Mean house P&amp;L: <b>${trials_df['house_pnl'].mean():,.2f}</b></li>
+    </ul>
+    """
+
+    def hm(z, title, colorscale="Viridis"):
+        return go.Figure(
+            data=go.Heatmap(
+                z=z, x=COL_LABELS, y=ROW_LABELS, colorscale=colorscale,
+                hovertemplate="MCI %{y} − CRY %{x}<br>value: %{z:.3f}<extra></extra>",
+            )
+        ).update_layout(title=title, height=400, xaxis_title="CRY goals", yaxis_title="MCI goals")
+
+    fig_supply = hm(mean_supply, "Mean terminal supply")
+    fig_payout = hm(mean_payout, "Mean marginal payout multiplier", "Magma")
+    fig_realized = hm(realized, "Realized payout / unit (when cell wins)", "Reds")
+    fig_winfreq = hm(win_freq, "Empirical winner frequency", "Blues")
+
+    # Trial slider: show final supply heatmap per trial for first 50 trials
+    slider_trials = sorted(terminal_df["trial_id"].unique())[:50]
+    frames = []
+    for tid in slider_trials:
+        sub = (
+            terminal_df[terminal_df.trial_id == tid]
+            .pivot(index="i", columns="j", values="supply")
+            .reindex(index=range(GRID_SIZE), columns=range(GRID_SIZE))
+            .to_numpy()
+        )
+        frames.append(go.Frame(data=[go.Heatmap(z=sub, x=COL_LABELS, y=ROW_LABELS, colorscale="Viridis")], name=str(tid)))
+    if frames:
+        init = frames[0].data[0].z
+    else:
+        init = mean_supply
+    fig_slider = go.Figure(
+        data=[go.Heatmap(z=init, x=COL_LABELS, y=ROW_LABELS, colorscale="Viridis")],
+        frames=frames,
+    )
+    fig_slider.update_layout(
+        title="Per-trial final supply (first 50 trials)",
+        height=450,
+        xaxis_title="CRY goals",
+        yaxis_title="MCI goals",
+        sliders=[
+            {
+                "steps": [
+                    {"args": [[f.name], {"frame": {"duration": 0, "redraw": True}}], "label": f.name, "method": "animate"}
+                    for f in frames
+                ],
+                "currentvalue": {"prefix": "trial_id="},
+            }
+        ] if frames else [],
+    )
+
+    # PnL histogram
+    fig_hist = px.histogram(
+        agent_df, x="pnl", nbins=80, title="Agent P&L distribution",
+    ).update_layout(height=350)
+
+    parts = [
+        "<html><head><title>Parimutuel MC Report</title>",
+        "<style>body{font-family:sans-serif;max-width:1100px;margin:20px auto;padding:0 16px}h2{margin-top:32px}</style>",
+        "</head><body>",
+        "<h1>Dynamic Parimutuel Monte Carlo</h1>",
+        kpi_html,
+        "<h2>Grid heatmaps</h2>",
+        fig_supply.to_html(full_html=False, include_plotlyjs="cdn"),
+        fig_payout.to_html(full_html=False, include_plotlyjs=False),
+        fig_realized.to_html(full_html=False, include_plotlyjs=False),
+        fig_winfreq.to_html(full_html=False, include_plotlyjs=False),
+        "<h2>P&L distribution</h2>",
+        fig_hist.to_html(full_html=False, include_plotlyjs=False),
+        "<h2>Per-trial supply</h2>",
+        fig_slider.to_html(full_html=False, include_plotlyjs=False),
+        "</body></html>",
+    ]
+    out.write_text("\n".join(parts))
