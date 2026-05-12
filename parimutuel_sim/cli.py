@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime
@@ -95,9 +96,19 @@ def parse_args(argv=None) -> SimConfig:
         unknown = set(meta_mix) - set(META_TRADES)
         if unknown:
             p.error(f"--meta-trade-mix has unknown keys: {sorted(unknown)}")
-        total = sum(float(v) for v in meta_mix.values())
+        try:
+            values = {k: float(v) for k, v in meta_mix.items()}
+        except (TypeError, ValueError) as exc:
+            p.error(f"--meta-trade-mix values must be numeric: {exc}")
+        for k, v in values.items():
+            if not math.isfinite(v):
+                p.error(f"--meta-trade-mix['{k}']={v} is not finite")
+            if v < 0:
+                p.error(f"--meta-trade-mix['{k}']={v} must be >= 0")
+        total = sum(values.values())
         if abs(total - 1.0) > 1e-6:
             p.error(f"--meta-trade-mix values must sum to 1.0, got {total}")
+        meta_mix = values
 
     try:
         cfg = SimConfig(
