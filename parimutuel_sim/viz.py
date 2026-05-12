@@ -23,6 +23,7 @@ from .analytics import (
     winner_frequency_grid,
 )
 from .market import GRID_SIZE
+from .meta_trades import META_TRADES
 
 ROW_LABELS = ["0", "1", "2", "3", "4", "5", "6", "≥7"]
 COL_LABELS = ["0", "1", "2", "3", "4", "5", "6", "≥7"]
@@ -190,11 +191,112 @@ def plot_winner_vs_supply(
     plt.close(fig)
 
 
+def _meta_trades_section(
+    meta_legs_df: Optional[pd.DataFrame],
+    meta_summary_df: Optional[pd.DataFrame],
+    meta_share_grid: Optional[np.ndarray],
+) -> str:
+    """Render the Meta Trades dashboard tab. Empty string if no meta data."""
+    if meta_legs_df is None or meta_legs_df.empty:
+        return ""
+
+    summary = meta_summary_df if meta_summary_df is not None else pd.DataFrame()
+
+    # Bar: total cash per meta key.
+    if not summary.empty:
+        fig_bar = go.Figure(
+            data=[
+                go.Bar(
+                    x=summary["meta_key"],
+                    y=summary["total_cash"],
+                    marker_color=["#4C78A8", "#54A24B", "#E45756"][: len(summary)],
+                    text=[f"${v:,.0f}" for v in summary["total_cash"]],
+                    textposition="outside",
+                )
+            ]
+        ).update_layout(
+            title="Total cash routed per meta key",
+            height=380,
+            xaxis_title="Meta key",
+            yaxis_title="Cash ($)",
+        )
+        bar_html = fig_bar.to_html(full_html=False, include_plotlyjs=False)
+    else:
+        bar_html = ""
+
+    # Stacked time-series across ticks: cash per tick into each meta key.
+    if "tick" in meta_legs_df.columns and meta_legs_df["tick"].notna().any():
+        per_tick = (
+            meta_legs_df.dropna(subset=["tick"])
+            .groupby(["tick", "meta_key"], as_index=False)["cash"]
+            .sum()
+        )
+        fig_ts = go.Figure()
+        palette = {"MCI_WIN": "#4C78A8", "DRAW": "#54A24B", "CRY_WIN": "#E45756"}
+        for key in ["MCI_WIN", "DRAW", "CRY_WIN"]:
+            sub = per_tick[per_tick.meta_key == key].sort_values("tick")
+            fig_ts.add_trace(
+                go.Bar(
+                    x=sub["tick"],
+                    y=sub["cash"],
+                    name=key,
+                    marker_color=palette.get(key, None),
+                )
+            )
+        fig_ts.update_layout(
+            barmode="stack",
+            title="Cash routed per tick by meta key",
+            height=380,
+            xaxis_title="Tick (within trial)",
+            yaxis_title="Cash ($)",
+        )
+        ts_html = fig_ts.to_html(full_html=False, include_plotlyjs=False)
+    else:
+        ts_html = ""
+
+    # Per-bucket heatmaps: share of final mcap arriving via meta.
+    hm_blocks = []
+    if meta_share_grid is not None:
+        for key, mdef in META_TRADES.items():
+            mask = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
+            for (i, j) in mdef.cells:
+                mask[i, j] = float(meta_share_grid[i, j])
+            fig = go.Figure(
+                data=go.Heatmap(
+                    z=mask,
+                    x=COL_LABELS,
+                    y=ROW_LABELS,
+                    colorscale="Viridis",
+                    zmin=0.0,
+                    zmax=1.0,
+                    hovertemplate=(
+                        "MCI %{y} − CRY %{x}<br>meta share: %{z:.1%}<extra></extra>"
+                    ),
+                )
+            ).update_layout(
+                title=f"{mdef.display_name}: meta share of cell mcap delta",
+                height=380,
+                xaxis_title="CRY goals",
+                yaxis_title="MCI goals",
+            )
+            hm_blocks.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+    return (
+        "<h2>Meta Trades</h2>"
+        + bar_html
+        + ts_html
+        + "".join(hm_blocks)
+    )
+
+
 def build_dashboard(
     terminal_df: pd.DataFrame,
     trials_df: pd.DataFrame,
     agent_df: pd.DataFrame,
     out: Path,
+    meta_legs_df: Optional[pd.DataFrame] = None,
+    meta_summary_df: Optional[pd.DataFrame] = None,
+    meta_share_grid: Optional[np.ndarray] = None,
 ) -> None:
     """Single interactive HTML report with KPIs + heatmaps + slider."""
 
@@ -270,6 +372,8 @@ def build_dashboard(
         agent_df, x="pnl", nbins=80, title="Agent P&L distribution",
     ).update_layout(height=350)
 
+    meta_html = _meta_trades_section(meta_legs_df, meta_summary_df, meta_share_grid)
+
     parts = [
         "<html><head><title>Parimutuel MC Report</title>",
         "<style>body{font-family:sans-serif;max-width:1100px;margin:20px auto;padding:0 16px}h2{margin-top:32px}</style>",
@@ -285,6 +389,7 @@ def build_dashboard(
         fig_hist.to_html(full_html=False, include_plotlyjs=False),
         "<h2>Per-trial supply</h2>",
         fig_slider.to_html(full_html=False, include_plotlyjs=False),
+        meta_html,
         "</body></html>",
     ]
     out.write_text("\n".join(parts))

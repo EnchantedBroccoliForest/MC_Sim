@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime
@@ -16,13 +17,19 @@ from . import viz
 from .analytics import (
     build_agent_pnl_df,
     build_event_log_df,
+    build_meta_trade_summary,
+    build_meta_trades_frame,
     build_terminal_grids_df,
     build_trials_df,
     conservation_check,
+    meta_share_per_cell_grid,
+    meta_trade_volume_share,
     percentiles,
     winner_frequency_grid,
 )
+from .agents import ALL_STRATEGIES
 from .market import GRID_SIZE
+from .meta_trades import META_TRADES
 from .settlement import winner_probabilities
 from .simulation import SimConfig, run_monte_carlo
 
@@ -45,7 +52,7 @@ def parse_args(argv=None) -> SimConfig:
         "--agent-strategy",
         type=str,
         default="uniform_random",
-        choices=["uniform_random", "weighted_by_marginal_payout"],
+        choices=list(ALL_STRATEGIES),
     )
     p.add_argument("--min-mint", type=float, default=1.0)
     p.add_argument("--max-per-mint", type=float, default=50.0)
@@ -56,7 +63,52 @@ def parse_args(argv=None) -> SimConfig:
     p.add_argument("--log-events-for-first-k", type=int, default=10)
     p.add_argument("--out-root", type=str, default="outputs/runs")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument(
+        "--meta-trades-enabled",
+        dest="meta_trades_enabled",
+        action="store_true",
+        default=True,
+    )
+    p.add_argument(
+        "--no-meta-trades-enabled",
+        dest="meta_trades_enabled",
+        action="store_false",
+    )
+    p.add_argument(
+        "--meta-trade-mix",
+        type=str,
+        default=None,
+        help=(
+            'Optional JSON prior used by moneyline_weighted, e.g. '
+            '\'{"MCI_WIN":0.4,"DRAW":0.2,"CRY_WIN":0.4}\'. Must sum to 1.0 ±1e-6.'
+        ),
+    )
     args = p.parse_args(argv)
+
+    meta_mix = None
+    if args.meta_trade_mix:
+        try:
+            meta_mix = json.loads(args.meta_trade_mix)
+        except json.JSONDecodeError as exc:
+            p.error(f"--meta-trade-mix is not valid JSON: {exc}")
+        if not isinstance(meta_mix, dict):
+            p.error("--meta-trade-mix must be a JSON object")
+        unknown = set(meta_mix) - set(META_TRADES)
+        if unknown:
+            p.error(f"--meta-trade-mix has unknown keys: {sorted(unknown)}")
+        try:
+            values = {k: float(v) for k, v in meta_mix.items()}
+        except (TypeError, ValueError) as exc:
+            p.error(f"--meta-trade-mix values must be numeric: {exc}")
+        for k, v in values.items():
+            if not math.isfinite(v):
+                p.error(f"--meta-trade-mix['{k}']={v} is not finite")
+            if v < 0:
+                p.error(f"--meta-trade-mix['{k}']={v} must be >= 0")
+        total = sum(values.values())
+        if abs(total - 1.0) > 1e-6:
+            p.error(f"--meta-trade-mix values must sum to 1.0, got {total}")
+        meta_mix = values
 
     try:
         cfg = SimConfig(
@@ -74,6 +126,8 @@ def parse_args(argv=None) -> SimConfig:
             refund_on_empty=args.refund_on_empty_winner,
             seed=args.seed,
             log_events_for_first_k=args.log_events_for_first_k,
+            meta_trades_enabled=args.meta_trades_enabled,
+            meta_trade_mix=meta_mix,
         )
     except ValueError as exc:
         p.error(str(exc))
@@ -108,12 +162,19 @@ def main(argv=None) -> int:
     agent_df = build_agent_pnl_df(trials)
     terminal_df = build_terminal_grids_df(trials)
     event_df = build_event_log_df(trials)
+    meta_legs_df = build_meta_trades_frame(trials)
+    meta_summary_df = build_meta_trade_summary(trials)
+    meta_share_grid = meta_share_per_cell_grid(trials)
+    meta_volume = meta_trade_volume_share(trials)
 
     trials_df.to_parquet(run_dir / "trials.parquet")
     agent_df.to_parquet(run_dir / "agent_pnl.parquet")
     terminal_df.to_parquet(run_dir / "terminal_grids.parquet")
     if not event_df.empty:
         event_df.to_parquet(run_dir / "event_log_sample.parquet")
+    if not meta_legs_df.empty:
+        meta_legs_df.to_parquet(run_dir / "meta_trades.parquet")
+        meta_summary_df.to_csv(run_dir / "meta_trade_summary.csv", index=False)
     trials_df.to_csv(run_dir / "trials.csv", index=False)
     agent_df.to_csv(run_dir / "agent_pnl.csv", index=False)
 
@@ -154,6 +215,11 @@ def main(argv=None) -> int:
             ),
         },
         "conservation": cons,
+        "meta_trades": {
+            "enabled": cfg.meta_trades_enabled,
+            "volume_share": meta_volume,
+            "by_key": meta_summary_df.to_dict(orient="records"),
+        },
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
@@ -180,17 +246,43 @@ def main(argv=None) -> int:
     viz.plot_winner_vs_supply(terminal_df, trials_df, plots_dir / "winner_vs_supply.png")
 
     print("Building interactive dashboard...")
-    viz.build_dashboard(terminal_df, trials_df, agent_df, run_dir / "dashboard.html")
+    viz.build_dashboard(
+        terminal_df,
+        trials_df,
+        agent_df,
+        run_dir / "dashboard.html",
+        meta_legs_df=meta_legs_df,
+        meta_summary_df=meta_summary_df,
+        meta_share_grid=meta_share_grid,
+    )
 
     # --- REPORT.md ---
     print("Writing REPORT.md...")
-    write_report(run_dir, cfg, summary, trials_df, agent_df, elapsed)
+    write_report(
+        run_dir,
+        cfg,
+        summary,
+        trials_df,
+        agent_df,
+        elapsed,
+        meta_summary_df=meta_summary_df,
+        meta_volume=meta_volume,
+    )
 
     print(f"\nDone. Outputs at: {run_dir}")
     return 0
 
 
-def write_report(run_dir, cfg, summary, trials_df, agent_df, elapsed):
+def write_report(
+    run_dir,
+    cfg,
+    summary,
+    trials_df,
+    agent_df,
+    elapsed,
+    meta_summary_df=None,
+    meta_volume=None,
+):
     median_roi = agent_df["roi"].median()
     mean_pnl = agent_df["pnl"].mean()
     pct_pos = (agent_df["pnl"] > 0).mean()
@@ -268,13 +360,44 @@ def write_report(run_dir, cfg, summary, trials_df, agent_df, elapsed):
 Open [`dashboard.html`](dashboard.html) in a browser for KPIs, heatmaps, and a
 per-trial slider over the 8×8 final-supply grid.
 
+## Meta Trades
+
+{_render_meta_trades_section(cfg, meta_summary_df, meta_volume)}
+
 ## Files
 
 - `summary.json` — run parameters and aggregate stats
 - `trials.parquet`, `agent_pnl.parquet`, `terminal_grids.parquet` — tabular data
 - `event_log_sample.parquet` — full mint log for the first {cfg.log_events_for_first_k} trials
+- `meta_trades.parquet`, `meta_trade_summary.csv` — meta-trade leg log and per-bucket summary (if any meta trades were placed)
 """
     (run_dir / "REPORT.md").write_text(md)
+
+
+def _render_meta_trades_section(cfg, meta_summary_df, meta_volume) -> str:
+    if not cfg.meta_trades_enabled:
+        return "Meta trades were disabled for this run (`--no-meta-trades-enabled`)."
+    if meta_summary_df is None or meta_summary_df.empty or meta_summary_df["n_trades"].sum() == 0:
+        return (
+            "No meta trades were placed (agent strategy does not select them). "
+            "Enable a meta-aware strategy via `--agent-strategy moneyline_uniform` or "
+            "`--agent-strategy moneyline_weighted` to populate this section."
+        )
+    share = (meta_volume or {}).get("meta_share_of_agent_volume", 0.0)
+    rows = ["| meta key | trades | total cash | mean size | share of agent spend |", "|---|---|---|---|---|"]
+    for _, r in meta_summary_df.iterrows():
+        rows.append(
+            f"| {r['meta_key']} | {int(r['n_trades']):,} | "
+            f"${r['total_cash']:,.2f} | ${r['mean_trade_size']:,.2f} | "
+            f"{r['share_of_agent_spend']:.2%} |"
+        )
+    table = "\n".join(rows)
+    return (
+        f"Meta trades routed **{share:.1%}** of agent-side pool dollars in this run.\n\n"
+        f"{table}\n\n"
+        "See the dashboard `Meta Trades` section for per-bucket bar/time-series "
+        "charts and the share-of-mcap heatmap overlays."
+    )
 
 
 if __name__ == "__main__":
