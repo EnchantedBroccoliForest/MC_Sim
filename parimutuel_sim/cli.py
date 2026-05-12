@@ -27,7 +27,7 @@ from .analytics import (
     percentiles,
     winner_frequency_grid,
 )
-from .agents import ALL_STRATEGIES
+from .agents import ALL_STRATEGIES, CELL_STRATEGIES, META_STRATEGIES
 from .market import GRID_SIZE
 from .meta_trades import META_TRADES
 from .settlement import winner_probabilities
@@ -51,8 +51,34 @@ def parse_args(argv=None) -> SimConfig:
     p.add_argument(
         "--agent-strategy",
         type=str,
-        default="uniform_random",
+        default="mixed",
         choices=list(ALL_STRATEGIES),
+        help=(
+            "Per-agent action strategy. The default 'mixed' assigns each agent "
+            "either --meta-strategy (with probability --meta-agent-fraction) or "
+            "--cell-strategy. The other values are single-strategy modes used by "
+            "all agents."
+        ),
+    )
+    p.add_argument(
+        "--meta-agent-fraction",
+        type=float,
+        default=0.8,
+        help="Fraction of agents using meta trades when --agent-strategy=mixed (default 0.8).",
+    )
+    p.add_argument(
+        "--cell-strategy",
+        type=str,
+        default="uniform_random",
+        choices=list(CELL_STRATEGIES),
+        help="Sub-strategy for non-meta agents when --agent-strategy=mixed.",
+    )
+    p.add_argument(
+        "--meta-strategy",
+        type=str,
+        default="moneyline_uniform",
+        choices=list(META_STRATEGIES),
+        help="Sub-strategy for meta agents when --agent-strategy=mixed.",
     )
     p.add_argument("--min-mint", type=float, default=1.0)
     p.add_argument("--max-per-mint", type=float, default=50.0)
@@ -128,6 +154,9 @@ def parse_args(argv=None) -> SimConfig:
             log_events_for_first_k=args.log_events_for_first_k,
             meta_trades_enabled=args.meta_trades_enabled,
             meta_trade_mix=meta_mix,
+            meta_agent_fraction=args.meta_agent_fraction,
+            cell_strategy=args.cell_strategy,
+            meta_strategy=args.meta_strategy,
         )
     except ValueError as exc:
         p.error(str(exc))
@@ -311,7 +340,7 @@ def write_report(
 
 **Run timestamp:** {run_dir.name}
 **Seed:** {cfg.seed}
-**Trials:** {cfg.n_trials} · **Agents per trial:** {cfg.n_agents} · **Strategy:** {cfg.strategy}
+**Trials:** {cfg.n_trials} · **Agents per trial:** {cfg.n_agents} · **Strategy:** {_format_strategy(cfg)}
 **Winner prior:** {cfg.winner_mode} · **Wall time:** {elapsed:.1f}s
 
 ## Headline stats
@@ -372,6 +401,15 @@ per-trial slider over the 8×8 final-supply grid.
 - `meta_trades.parquet`, `meta_trade_summary.csv` — meta-trade leg log and per-bucket summary (if any meta trades were placed)
 """
     (run_dir / "REPORT.md").write_text(md)
+
+
+def _format_strategy(cfg) -> str:
+    if cfg.strategy == "mixed":
+        return (
+            f"mixed ({cfg.meta_agent_fraction:.0%} {cfg.meta_strategy} / "
+            f"{1 - cfg.meta_agent_fraction:.0%} {cfg.cell_strategy})"
+        )
+    return cfg.strategy
 
 
 def _render_meta_trades_section(cfg, meta_summary_df, meta_volume) -> str:

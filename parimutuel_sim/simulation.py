@@ -8,8 +8,11 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from .agents import (
+    CELL_STRATEGIES,
     META_STRATEGIES,
+    MIXED_STRATEGY,
     Agent,
+    assign_strategies,
     make_agents,
     pick_action,
 )
@@ -28,7 +31,9 @@ class SimConfig:
     init_mcap_min: float = 0.10
     init_mcap_max: float = 10.0
     winner_mode: str = "realistic"
-    strategy: str = "uniform_random"
+    # Default is the 80/20 mixed-cohort model: 80% of agents trade via the
+    # moneyline meta buckets, 20% mint single cells uniformly at random.
+    strategy: str = "mixed"
     min_mint: float = 1.0
     max_per_mint: float = 50.0
     min_mint_threshold: float = 0.01
@@ -37,6 +42,10 @@ class SimConfig:
     log_events_for_first_k: int = 10
     meta_trades_enabled: bool = True
     meta_trade_mix: Optional[dict] = None  # prior used by moneyline_weighted
+    # Mixed-cohort knobs. Only consulted when ``strategy == "mixed"``.
+    meta_agent_fraction: float = 0.8
+    cell_strategy: str = "uniform_random"
+    meta_strategy: str = "moneyline_uniform"
 
     def __post_init__(self):
         if self.n_agents < 0:
@@ -59,6 +68,21 @@ class SimConfig:
             raise ValueError("min_mint_threshold must be >= 0")
         if self.log_events_for_first_k < 0:
             raise ValueError("log_events_for_first_k must be >= 0")
+        if not (0.0 <= self.meta_agent_fraction <= 1.0):
+            raise ValueError("meta_agent_fraction must be in [0, 1]")
+        if self.strategy == MIXED_STRATEGY:
+            if self.cell_strategy not in CELL_STRATEGIES:
+                raise ValueError(
+                    f"cell_strategy must be one of {CELL_STRATEGIES}, got {self.cell_strategy!r}"
+                )
+            if self.meta_strategy not in META_STRATEGIES:
+                raise ValueError(
+                    f"meta_strategy must be one of {META_STRATEGIES}, got {self.meta_strategy!r}"
+                )
+            if self.meta_agent_fraction > 0 and not self.meta_trades_enabled:
+                raise ValueError(
+                    "mixed strategy with meta_agent_fraction > 0 requires meta_trades_enabled=True"
+                )
 
 
 @dataclass
@@ -85,13 +109,13 @@ def _step_agent(
     rng: np.random.Generator,
     tick: int,
 ) -> Optional[dict]:
-    if cfg.strategy in META_STRATEGIES and not cfg.meta_trades_enabled:
+    if agent.strategy in META_STRATEGIES and not cfg.meta_trades_enabled:
         raise ValueError(
-            f"strategy {cfg.strategy!r} requires meta_trades_enabled=True"
+            f"strategy {agent.strategy!r} requires meta_trades_enabled=True"
         )
     action = pick_action(
         state,
-        cfg.strategy,
+        agent.strategy,
         agent.cash,
         cfg.min_mint,
         cfg.max_per_mint,
@@ -172,6 +196,14 @@ def run_one_trial(
     house_seed_total = state.house_seed_total
 
     agents = make_agents(cfg.n_agents, cfg.balance_min, cfg.balance_max, rng)
+    assign_strategies(
+        agents,
+        cfg.strategy,
+        rng,
+        meta_agent_fraction=cfg.meta_agent_fraction,
+        cell_strategy=cfg.cell_strategy,
+        meta_strategy=cfg.meta_strategy,
+    )
     if not agents:
         # Degenerate: just settle on the seeded state.
         probs = winner_probabilities(cfg.winner_mode)
