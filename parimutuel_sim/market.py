@@ -8,9 +8,11 @@ Inverse-mint: x2 = ( x1^(7/4) + (7/4) * D )^(4/7).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
+
+from . import meta_trades as _meta_trades_mod
 
 GRID_SIZE = 8
 N_CELLS = GRID_SIZE * GRID_SIZE
@@ -61,6 +63,26 @@ def mint_units(x1: float, dollars: float) -> Tuple[float, float]:
 
 
 @dataclass
+class MetaTradeFill:
+    """Record returned by ``MarketState.mint_meta`` describing one meta trade.
+
+    ``legs`` carries one tuple per underlying cell touched, in the order they
+    were minted. Each leg tuple is ``(cell, cash, units, pre_mcap, post_mcap)``.
+    """
+
+    meta_key: str
+    agent_id: Optional[int]
+    total_cash: float
+    legs: List[Tuple[Tuple[int, int], float, float, float, float]]
+    trial_id: Optional[int] = None
+    tick: Optional[int] = None
+
+    @property
+    def total_units(self) -> float:
+        return sum(units for _, _, units, _, _ in self.legs)
+
+
+@dataclass
 class MarketState:
     """Holds the live 8x8 supply grid and the initial seed grid for accounting."""
 
@@ -70,6 +92,7 @@ class MarketState:
     supply: np.ndarray = field(init=False)
     init_mcap: np.ndarray = field(init=False)
     init_supply: np.ndarray = field(init=False)
+    meta_trade_log: List[MetaTradeFill] = field(default_factory=list, init=False)
 
     def __post_init__(self):
         if self.init_mcap_min < 0 or self.init_mcap_max < 0:
@@ -105,6 +128,45 @@ class MarketState:
         x_new, units = mint_units(self.supply[i, j], dollars)
         self.supply[i, j] = x_new
         return units
+
+    def mint_meta(
+        self,
+        meta_key: str,
+        dollars: float,
+        agent_id: Optional[int] = None,
+    ) -> MetaTradeFill:
+        """Buy a named bucket of cells with ``dollars`` of cash.
+
+        Snapshot the pre-trade market cap of each cell in the bucket, split
+        ``dollars`` across them weighted by those caps, and mint each leg via
+        the single-cell ``mint`` method (same bonding curve, no joint math).
+        Records the fill in ``self.meta_trade_log``.
+        """
+        try:
+            mdef = _meta_trades_mod.META_TRADES[meta_key]
+        except KeyError as exc:
+            raise ValueError(f"Unknown meta_key: {meta_key!r}") from exc
+
+        cells = mdef.cells
+        pre_caps = {c: float(mcap(self.supply[c])) for c in cells}
+        allocation = _meta_trades_mod.allocate(dollars, cells, pre_caps)
+
+        legs: List[Tuple[Tuple[int, int], float, float, float, float]] = []
+        for c in cells:
+            cash_leg = float(allocation.get(c, 0.0))
+            pre = pre_caps[c]
+            units = float(self.mint(c, cash_leg)) if cash_leg > 0 else 0.0
+            post = float(mcap(self.supply[c]))
+            legs.append((c, cash_leg, units, pre, post))
+
+        fill = MetaTradeFill(
+            meta_key=meta_key,
+            agent_id=agent_id,
+            total_cash=float(dollars) if dollars > 0 else 0.0,
+            legs=legs,
+        )
+        self.meta_trade_log.append(fill)
+        return fill
 
     @property
     def house_seed_total(self) -> float:

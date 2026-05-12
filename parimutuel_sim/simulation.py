@@ -7,7 +7,12 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .agents import Agent, make_agents, pick_cell, pick_mint_amount
+from .agents import (
+    META_STRATEGIES,
+    Agent,
+    make_agents,
+    pick_action,
+)
 from .market import GRID_SIZE, SEED_RNG_SALT, MarketState, marginal_payout, mcap
 from .settlement import draw_winner, settle, winner_probabilities
 
@@ -30,6 +35,8 @@ class SimConfig:
     refund_on_empty: bool = True
     seed: int = 0
     log_events_for_first_k: int = 10
+    meta_trades_enabled: bool = True
+    meta_trade_mix: Optional[dict] = None  # prior used by moneyline_weighted
 
     def __post_init__(self):
         if self.n_agents < 0:
@@ -68,6 +75,7 @@ class TrialResult:
     house_seed_total: float
     house_terminal_value: float
     event_log: Optional[List[dict]] = None
+    meta_trade_log: list = field(default_factory=list)
 
 
 def _step_agent(
@@ -75,22 +83,73 @@ def _step_agent(
     agent: Agent,
     cfg: SimConfig,
     rng: np.random.Generator,
+    tick: int,
 ) -> Optional[dict]:
-    cell = pick_cell(state, cfg.strategy, rng)
-    mint_amt = pick_mint_amount(agent.cash, cfg.min_mint, cfg.max_per_mint, rng)
-    if mint_amt <= 0:
+    if cfg.strategy in META_STRATEGIES and not cfg.meta_trades_enabled:
+        raise ValueError(
+            f"strategy {cfg.strategy!r} requires meta_trades_enabled=True"
+        )
+    action = pick_action(
+        state,
+        cfg.strategy,
+        agent.cash,
+        cfg.min_mint,
+        cfg.max_per_mint,
+        rng,
+        meta_prior=cfg.meta_trade_mix,
+    )
+    if action.amount <= 0:
         return None
-    units = state.mint(cell, mint_amt)
-    agent.cash -= mint_amt
-    agent.add_holding(cell, units)
+
+    pre_mcap_total = float(state.mcap_grid.sum())
+
+    if action.kind == "cell":
+        cell = action.cell
+        units = state.mint(cell, action.amount)
+        agent.cash -= action.amount
+        agent.add_holding(cell, units)
+        post_mcap_total = float(state.mcap_grid.sum())
+        # Conservation invariant for the step: cash spent equals mcap delta.
+        assert abs((post_mcap_total - pre_mcap_total) - action.amount) <= 1e-6 * max(
+            1.0, action.amount
+        ), "single-cell mint broke step conservation"
+        return {
+            "trial_id": None,
+            "tick": tick,
+            "kind": "cell",
+            "agent_id": agent.agent_id,
+            "cell_i": cell[0],
+            "cell_j": cell[1],
+            "meta_key": None,
+            "mint_amt": action.amount,
+            "units": units,
+            "new_supply": float(state.supply[cell]),
+            "marginal_payout": (4.0 / 7.0) * float(state.supply[cell]),
+        }
+
+    # Meta trade
+    fill = state.mint_meta(action.meta_key, action.amount, agent_id=agent.agent_id)
+    agent.cash -= action.amount
+    for cell, _cash, units, _pre, _post in fill.legs:
+        if units > 0:
+            agent.add_holding(cell, units)
+    post_mcap_total = float(state.mcap_grid.sum())
+    assert abs((post_mcap_total - pre_mcap_total) - action.amount) <= 1e-6 * max(
+        1.0, action.amount
+    ), "meta-trade legs broke step conservation"
+    fill.tick = tick
     return {
+        "trial_id": None,
+        "tick": tick,
+        "kind": "meta",
         "agent_id": agent.agent_id,
-        "cell_i": cell[0],
-        "cell_j": cell[1],
-        "mint_amt": mint_amt,
-        "units": units,
-        "new_supply": float(state.supply[cell]),
-        "marginal_payout": (4.0 / 7.0) * float(state.supply[cell]),
+        "cell_i": None,
+        "cell_j": None,
+        "meta_key": action.meta_key,
+        "mint_amt": action.amount,
+        "units": fill.total_units,
+        "new_supply": None,
+        "marginal_payout": None,
     }
 
 
@@ -139,6 +198,7 @@ def run_one_trial(
     # Action loop: random agent acts each step until everyone is below threshold.
     active_ids = [a.agent_id for a in agents]
     by_id = {a.agent_id: a for a in agents}
+    tick = 0
     while active_ids:
         idx = int(rng.integers(len(active_ids)))
         agent = by_id[active_ids[idx]]
@@ -146,12 +206,18 @@ def run_one_trial(
             # Drop this agent and continue.
             active_ids.pop(idx)
             continue
-        ev = _step_agent(state, agent, cfg, rng)
+        ev = _step_agent(state, agent, cfg, rng, tick=tick)
+        if ev is not None:
+            tick += 1
         if event_log is not None and ev is not None:
             ev["trial_id"] = trial_id
             event_log.append(ev)
         if agent.cash <= cfg.min_mint_threshold:
             active_ids.pop(idx)
+
+    # Stamp trial_id onto meta trade records (left None during the loop).
+    for fill in state.meta_trade_log:
+        fill.trial_id = trial_id
 
     # Winner & settlement
     probs = winner_probabilities(cfg.winner_mode)
@@ -198,6 +264,7 @@ def run_one_trial(
         house_seed_total=house_seed_total,
         house_terminal_value=house_terminal_value,
         event_log=event_log,
+        meta_trade_log=list(state.meta_trade_log),
     )
 
 

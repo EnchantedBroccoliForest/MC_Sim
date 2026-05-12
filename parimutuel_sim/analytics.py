@@ -8,6 +8,34 @@ import numpy as np
 import pandas as pd
 
 from .market import GRID_SIZE, mcap
+from .meta_trades import META_TRADES
+
+META_TRADES_FRAME_COLUMNS = [
+    "trial_id",
+    "tick",
+    "agent_id",
+    "meta_key",
+    "set_name",
+    "cell_mci",
+    "cell_cry",
+    "cash",
+    "units",
+    "pre_mcap",
+    "post_mcap",
+    "weight",
+]
+
+META_TRADE_SUMMARY_COLUMNS = [
+    "meta_key",
+    "set_name",
+    "total_cash",
+    "total_units",
+    "n_trades",
+    "mean_trade_size",
+    "median_trade_size",
+    "max_trade_size",
+    "share_of_agent_spend",
+]
 
 AGENT_PNL_COLUMNS = [
     "trial_id",
@@ -172,6 +200,112 @@ def mean_payout_per_unit_when_winner(terminal_df: pd.DataFrame, trials_df: pd.Da
     with np.errstate(invalid="ignore", divide="ignore"):
         out = np.where(counts > 0, grid / np.maximum(counts, 1), np.nan)
     return out
+
+
+def build_meta_trades_frame(trials: Iterable) -> pd.DataFrame:
+    """One row per meta-trade leg."""
+    rows = []
+    for t in trials:
+        for fill in getattr(t, "meta_trade_log", []) or []:
+            mdef = META_TRADES.get(fill.meta_key)
+            set_name = mdef.set_name if mdef else ""
+            for (cell, cash, units, pre, post) in fill.legs:
+                weight = (cash / fill.total_cash) if fill.total_cash > 0 else 0.0
+                rows.append(
+                    {
+                        "trial_id": fill.trial_id if fill.trial_id is not None else t.trial_id,
+                        "tick": fill.tick,
+                        "agent_id": fill.agent_id,
+                        "meta_key": fill.meta_key,
+                        "set_name": set_name,
+                        "cell_mci": int(cell[0]),
+                        "cell_cry": int(cell[1]),
+                        "cash": float(cash),
+                        "units": float(units),
+                        "pre_mcap": float(pre),
+                        "post_mcap": float(post),
+                        "weight": float(weight),
+                    }
+                )
+    return pd.DataFrame(rows, columns=META_TRADES_FRAME_COLUMNS)
+
+
+def build_meta_trade_summary(trials: Iterable) -> pd.DataFrame:
+    """One row per meta_key aggregated across trials.
+
+    ``share_of_agent_spend`` is the fraction of total agent-side pool dollars
+    (total_pool minus house seed, summed across trials) routed through this
+    meta key.
+    """
+    by_key: dict[str, list[float]] = {k: [] for k in META_TRADES}
+    units_by_key: dict[str, float] = {k: 0.0 for k in META_TRADES}
+    agent_pool_total = 0.0
+    for t in trials:
+        agent_pool_total += max(0.0, t.total_pool - t.house_seed_total)
+        for fill in getattr(t, "meta_trade_log", []) or []:
+            if fill.total_cash <= 0:
+                continue
+            by_key.setdefault(fill.meta_key, []).append(fill.total_cash)
+            units_by_key[fill.meta_key] = units_by_key.get(
+                fill.meta_key, 0.0
+            ) + fill.total_units
+
+    rows = []
+    for key, mdef in META_TRADES.items():
+        sizes = by_key.get(key, [])
+        total_cash = float(sum(sizes))
+        share = (total_cash / agent_pool_total) if agent_pool_total > 0 else 0.0
+        rows.append(
+            {
+                "meta_key": key,
+                "set_name": mdef.set_name,
+                "total_cash": total_cash,
+                "total_units": float(units_by_key.get(key, 0.0)),
+                "n_trades": int(len(sizes)),
+                "mean_trade_size": float(np.mean(sizes)) if sizes else 0.0,
+                "median_trade_size": float(np.median(sizes)) if sizes else 0.0,
+                "max_trade_size": float(np.max(sizes)) if sizes else 0.0,
+                "share_of_agent_spend": float(share),
+            }
+        )
+    return pd.DataFrame(rows, columns=META_TRADE_SUMMARY_COLUMNS)
+
+
+def meta_share_per_cell_grid(trials: Iterable) -> np.ndarray:
+    """For each cell, share of final market cap that arrived via meta trades.
+
+    Numerator: sum of meta-trade cash routed into the cell across trials.
+    Denominator: sum of (final mcap - initial mcap) across trials (i.e. all
+    agent-side dollars that landed in the cell, meta or not).
+    """
+    meta_cash = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
+    total_delta = np.zeros((GRID_SIZE, GRID_SIZE), dtype=float)
+    for t in trials:
+        delta = mcap(t.final_supply) - mcap(t.init_supply_grid)
+        total_delta += np.maximum(delta, 0.0)
+        for fill in getattr(t, "meta_trade_log", []) or []:
+            for (cell, cash, _u, _pre, _post) in fill.legs:
+                if cash > 0:
+                    meta_cash[cell[0], cell[1]] += cash
+    with np.errstate(invalid="ignore", divide="ignore"):
+        share = np.where(total_delta > 0, meta_cash / np.maximum(total_delta, 1e-12), 0.0)
+    return share
+
+
+def meta_trade_volume_share(trials: Iterable) -> dict:
+    """Diagnostic: fraction of agent-side pool dollars routed through meta trades."""
+    meta_cash_total = 0.0
+    agent_pool_total = 0.0
+    for t in trials:
+        meta_cash = sum(f.total_cash for f in getattr(t, "meta_trade_log", []) or [])
+        meta_cash_total += meta_cash
+        agent_pool_total += max(0.0, t.total_pool - t.house_seed_total)
+    share = (meta_cash_total / agent_pool_total) if agent_pool_total > 0 else 0.0
+    return {
+        "meta_cash_total": float(meta_cash_total),
+        "agent_pool_total": float(agent_pool_total),
+        "meta_share_of_agent_volume": float(share),
+    }
 
 
 def conservation_check(trials) -> dict:
