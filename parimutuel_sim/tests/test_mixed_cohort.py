@@ -20,9 +20,15 @@ def _mk_agents(n: int) -> list[Agent]:
     return [Agent(agent_id=i, starting_balance=100.0, cash=100.0) for i in range(n)]
 
 
-def test_default_strategy_is_mixed_80_20():
+def test_default_strategy_is_custom_mix():
     cfg = SimConfig()
-    assert cfg.strategy == "mixed"
+    assert cfg.strategy == "custom_mix"
+    assert cfg.strategy_mix == {
+        "moneyline_weighted": 0.80,
+        "totals_uniform": 0.10,
+        "spreads_uniform": 0.05,
+        "exact_score_weighted": 0.05,
+    }
     assert cfg.meta_agent_fraction == 0.8
     assert cfg.cell_strategy == "uniform_random"
     assert cfg.meta_strategy == "moneyline_uniform"

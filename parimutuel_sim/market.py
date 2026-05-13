@@ -8,7 +8,7 @@ Inverse-mint: x2 = ( x1^(7/4) + (7/4) * D )^(4/7).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -23,6 +23,7 @@ INV_EXP = 4.0 / 7.0  # 1 / (1 + alpha)
 # Separate RNG stream constant for seeding the initial grid; XORed with the
 # user-supplied seed so changing agent count doesn't reshuffle the grid.
 SEED_RNG_SALT = 0xA5A5
+MCAP_TOTAL_RESYNC_INTERVAL = 2048
 
 
 def marginal_price(x):
@@ -31,10 +32,20 @@ def marginal_price(x):
     return np.power(x, ALPHA, where=x > 0, out=np.zeros_like(x))
 
 
+def marginal_price_scalar(x: float) -> float:
+    """Scalar p(x) helper for inner loops."""
+    return x**ALPHA if x > 0 else 0.0
+
+
 def mcap(x):
     """Market cap = total USD ever spent minting this OT."""
     x = np.asarray(x, dtype=float)
     return (4.0 / 7.0) * np.power(x, EXP_OUT, where=x > 0, out=np.zeros_like(x))
+
+
+def mcap_scalar(x: float) -> float:
+    """Scalar market-cap helper for inner loops."""
+    return (4.0 / 7.0) * x**EXP_OUT if x > 0 else 0.0
 
 
 def marginal_payout(x):
@@ -92,6 +103,9 @@ class MarketState:
     supply: np.ndarray = field(init=False)
     init_mcap: np.ndarray = field(init=False)
     init_supply: np.ndarray = field(init=False)
+    _mcap_grid: np.ndarray = field(init=False, repr=False)
+    _total_mcap: float = field(init=False, repr=False)
+    _mints_since_total_resync: int = field(init=False, repr=False)
     meta_trade_log: List[MetaTradeFill] = field(default_factory=list, init=False)
 
     def __post_init__(self):
@@ -109,10 +123,27 @@ class MarketState:
             )
             self.init_supply = ((7.0 / 4.0) * self.init_mcap) ** INV_EXP
         self.supply = self.init_supply.copy()
+        self.refresh_mcap_cache()
+
+    def refresh_mcap_cache(self) -> None:
+        """Rebuild cached market caps from the public supply grid."""
+        self._mcap_grid = mcap(self.supply)
+        self._total_mcap = float(self._mcap_grid.sum())
+        self._mints_since_total_resync = 0
+
+    def _resync_total_mcap(self) -> None:
+        self._total_mcap = float(self._mcap_grid.sum())
+        self._mints_since_total_resync = 0
 
     @property
     def mcap_grid(self) -> np.ndarray:
-        return mcap(self.supply)
+        # ``supply`` is public and existing callers may mutate it directly.
+        self.refresh_mcap_cache()
+        return self._mcap_grid.copy()
+
+    @property
+    def total_mcap(self) -> float:
+        return self._total_mcap
 
     @property
     def price_grid(self) -> np.ndarray:
@@ -125,15 +156,30 @@ class MarketState:
     def mint(self, cell: Tuple[int, int], dollars: float) -> float:
         """Mint into one cell. Returns units minted."""
         i, j = cell
-        x_new, units = mint_units(self.supply[i, j], dollars)
-        self.supply[i, j] = x_new
+        x_old = float(self.supply[i, j])
+        x_new, units = mint_units(x_old, dollars)
+        if x_new != x_old:
+            old_mcap = float(self._mcap_grid[i, j])
+            new_mcap = mcap_scalar(float(x_new))
+            self.supply[i, j] = x_new
+            self._mcap_grid[i, j] = new_mcap
+            self._total_mcap += new_mcap - old_mcap
+            self._mints_since_total_resync += 1
+            if self._mints_since_total_resync >= MCAP_TOTAL_RESYNC_INTERVAL:
+                self._resync_total_mcap()
         return units
+
+    def mcap_snapshot(self, cells: Tuple[Tuple[int, int], ...]) -> dict[Tuple[int, int], float]:
+        """Return cached market caps for a set of cells."""
+        return {c: float(self._mcap_grid[c]) for c in cells}
 
     def mint_meta(
         self,
         meta_key: str,
         dollars: float,
         agent_id: Optional[int] = None,
+        pre_caps: Optional[Mapping[Tuple[int, int], float]] = None,
+        allocation: Optional[Mapping[Tuple[int, int], float]] = None,
     ) -> MetaTradeFill:
         """Buy a named bucket of cells with ``dollars`` of cash.
 
@@ -148,15 +194,17 @@ class MarketState:
             raise ValueError(f"Unknown meta_key: {meta_key!r}") from exc
 
         cells = mdef.cells
-        pre_caps = {c: float(mcap(self.supply[c])) for c in cells}
-        allocation = _meta_trades_mod.allocate(dollars, cells, pre_caps)
+        if pre_caps is None:
+            pre_caps = self.mcap_snapshot(cells)
+        if allocation is None:
+            allocation = _meta_trades_mod.allocate(dollars, cells, pre_caps)
 
         legs: List[Tuple[Tuple[int, int], float, float, float, float]] = []
         for c in cells:
             cash_leg = float(allocation.get(c, 0.0))
-            pre = pre_caps[c]
+            pre = float(pre_caps[c])
             units = float(self.mint(c, cash_leg)) if cash_leg > 0 else 0.0
-            post = float(mcap(self.supply[c]))
+            post = float(self._mcap_grid[c])
             legs.append((c, cash_leg, units, pre, post))
 
         fill = MetaTradeFill(

@@ -18,7 +18,7 @@ from .agents import (
     make_agents,
     pick_action,
 )
-from .market import GRID_SIZE, SEED_RNG_SALT, MarketState, marginal_payout, mcap, mint_units, marginal_price
+from .market import GRID_SIZE, SEED_RNG_SALT, MarketState, marginal_price_scalar, mint_units
 from .meta_trades import (
     META_TRADES,
     allocate,
@@ -159,7 +159,7 @@ def _step_agent(
     if action.amount <= 0:
         return None
 
-    pre_mcap_total = float(state.mcap_grid.sum())
+    pre_mcap_total = state.total_mcap
 
     if action.kind == "cell":
         cell = action.cell
@@ -176,7 +176,7 @@ def _step_agent(
         agent.cash -= action.amount
         agent.add_holding(cell, units)
         # Conservation invariant for the step: cash spent equals mcap delta.
-        assert abs((float(state.mcap_grid.sum()) - pre_mcap_total) - action.amount) <= 1e-6 * max(
+        assert abs((state.total_mcap - pre_mcap_total) - action.amount) <= 1e-6 * max(
             1.0, action.amount
         ), "single-cell mint broke step conservation"
         return {
@@ -195,7 +195,7 @@ def _step_agent(
 
     # Meta trade
     cells = META_TRADES[action.meta_key].cells
-    mcaps = {c: float(state.mcap_grid[c]) for c in cells}
+    mcaps = state.mcap_snapshot(cells)
     alloc = allocate(action.amount, cells, mcaps)
     post_mcap_total = pre_mcap_total + action.amount
     passed = False
@@ -211,12 +211,18 @@ def _step_agent(
     if not passed:
         return {"rejected": True, "category": categorize_action(action)}
 
-    fill = state.mint_meta(action.meta_key, action.amount, agent_id=agent.agent_id)
+    fill = state.mint_meta(
+        action.meta_key,
+        action.amount,
+        agent_id=agent.agent_id,
+        pre_caps=mcaps,
+        allocation=alloc,
+    )
     agent.cash -= action.amount
     for cell, _cash, units, _pre, _post in fill.legs:
         if units > 0:
             agent.add_holding(cell, units)
-    assert abs((float(state.mcap_grid.sum()) - pre_mcap_total) - action.amount) <= 1e-6 * max(
+    assert abs((state.total_mcap - pre_mcap_total) - action.amount) <= 1e-6 * max(
         1.0, action.amount
     ), "meta-trade legs broke step conservation"
     fill.tick = tick
@@ -311,15 +317,17 @@ def run_one_trial(
     cry_cells = META_TRADES["CRY_WIN"].cells
 
     def log_timeline(current_tick):
-        total_pool = float(state.mcap_grid.sum())
+        total_pool = state.total_mcap
         timeline["tick"].append(current_tick)
         for key, cells in [("MCI_WIN", mci_cells), ("DRAW", draw_cells), ("CRY_WIN", cry_cells)]:
-            p_bucket = sum(float(marginal_price(state.supply[c])) for c in cells)
+            p_bucket = sum(marginal_price_scalar(float(state.supply[c])) for c in cells)
             timeline[key].append(total_pool / p_bucket if p_bucket > 0 else 0.0)
 
+    last_timeline_tick = -1
     while active_ids:
-        if tick % 5 == 0:
+        if tick != last_timeline_tick and tick % 5 == 0:
             log_timeline(tick)
+            last_timeline_tick = tick
 
         if consecutive_passes > max_passes:
             break

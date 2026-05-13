@@ -137,6 +137,37 @@ def test_init_seed_range():
     assert np.all(mcaps <= init_max + 1e-12)
 
 
+def test_market_state_cached_mcap_tracks_mints():
+    """The cached total mcap stays aligned with the bonding curve state."""
+    state = MarketState(init_mcap_min=0.10, init_mcap_max=10.0, rng=np.random.default_rng(7))
+    state.mint((2, 3), 12.5)
+    state.mint_meta("DRAW", 25.0)
+
+    assert math.isclose(
+        state.total_mcap,
+        float(mcap(state.supply).sum()),
+        rel_tol=1e-12,
+        abs_tol=1e-9,
+    )
+
+
+def test_market_state_cached_mcap_tracks_many_mints():
+    """The cached total mcap does not drift materially over a long run."""
+    rng = np.random.default_rng(123)
+    state = MarketState(init_mcap_min=0.10, init_mcap_max=10.0, rng=np.random.default_rng(7))
+
+    for _ in range(10_000):
+        cell = (int(rng.integers(GRID_SIZE)), int(rng.integers(GRID_SIZE)))
+        state.mint(cell, float(rng.uniform(0.01, 50.0)))
+
+    assert math.isclose(
+        state.total_mcap,
+        float(mcap(state.supply).sum()),
+        rel_tol=1e-10,
+        abs_tol=1e-7,
+    )
+
+
 def test_seed_independence():
     """Changing N (agent count) leaves the seeded initial grid unchanged."""
     seed = 9999
