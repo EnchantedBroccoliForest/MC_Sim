@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import uuid
+import collections
 from typing import Iterator
 
 import numpy as np
@@ -28,6 +29,7 @@ from parimutuel_sim.analytics import (
 from parimutuel_sim.market import GRID_SIZE
 from parimutuel_sim.settlement import winner_probabilities
 from parimutuel_sim.simulation import SimConfig, run_monte_carlo
+from parimutuel_sim.meta_trades import MONEYLINE_KEYS, TOTALS_KEYS, SPREAD_KEYS
 
 app = Flask(__name__)
 
@@ -69,7 +71,11 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
 
     # --- Charts ---
     mean_supply = mean_terminal_supply_grid(terminal_df)
-    mean_payout = mean_marginal_payout_grid(terminal_df)
+    
+    # Calculate True Payout Multiplier
+    # true_multiplier = Total Pool / Supply (with a tiny eps to prevent div by zero)
+    true_multiplier = np.divide(mean_pool, mean_supply, out=np.zeros_like(mean_supply), where=mean_supply>0)
+    
     realized = mean_payout_per_unit_when_winner(terminal_df, trials_df)
     win_freq = winner_frequency_grid(trials_df)
 
@@ -119,6 +125,129 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
         height=350, margin=dict(l=50, r=20, t=50, b=50),
         xaxis_title="Starting balance ($)", yaxis_title="ROI")
     fig_roi.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
+
+    # Rejections tracking
+    total_attempts = {"Moneyline": 0, "Totals": 0, "Spreads": 0, "Specific scores": 0}
+    total_rejections = {"Moneyline": 0, "Totals": 0, "Spreads": 0, "Specific scores": 0}
+    for tr in trials:
+        for k in total_attempts:
+            total_attempts[k] += tr.rejection_stats["attempts"].get(k, 0)
+            total_rejections[k] += tr.rejection_stats["rejections"].get(k, 0)
+            
+    rejection_rates = {}
+    overall_attempts = sum(total_attempts.values())
+    overall_rejections = sum(total_rejections.values())
+    rejection_rates["Overall"] = (overall_rejections / overall_attempts) if overall_attempts > 0 else 0.0
+    for k in total_attempts:
+        rejection_rates[k] = (total_rejections[k] / total_attempts[k]) if total_attempts[k] > 0 else 0.0
+
+    categories = ["Overall", "Moneyline", "Totals", "Spreads", "Specific scores"]
+    rates = [rejection_rates[c] for c in categories]
+    fig_rej = go.Figure(data=[
+        go.Bar(x=categories, y=rates, marker_color="#f87171", text=[f"{r*100:.1f}%" for r in rates], textposition="auto")
+    ])
+    fig_rej.update_layout(
+        title="Trade Rejection Rates (Multiplier ≤ 1.0)",
+        height=350, margin=dict(l=50, r=20, t=50, b=50),
+        yaxis=dict(title="Rejection %", tickformat=".1%"),
+        plot_bgcolor="#1a1d27", paper_bgcolor="#1a1d27", font=dict(color="#94a3b8")
+    )
+    
+    # Granular Rejections
+    granular_attempts = collections.defaultdict(int)
+    granular_rejections = collections.defaultdict(int)
+    for tr in trials:
+        if hasattr(tr, 'granular_stats'):
+            for k, v in tr.granular_stats["attempts"].items():
+                granular_attempts[k] += v
+            for k, v in tr.granular_stats["rejections"].items():
+                granular_rejections[k] += v
+                
+    def make_granular_chart(keys, title):
+        names = []
+        rates = []
+        for k in keys:
+            att = granular_attempts[k]
+            rej = granular_rejections[k]
+            names.append(k)
+            rates.append(rej / att if att > 0 else 0.0)
+            
+        fig = go.Figure(data=[
+            go.Bar(x=names, y=rates, marker_color="#fb923c", text=[f"{r*100:.1f}%" for r in rates], textposition="auto")
+        ])
+        fig.update_layout(
+            title=title,
+            height=300, margin=dict(l=50, r=20, t=50, b=50),
+            yaxis=dict(title="Rejection %", tickformat=".1%", rangemode="tozero"),
+            plot_bgcolor="#1a1d27", paper_bgcolor="#1a1d27", font=dict(color="#94a3b8")
+        )
+        return fig
+        
+    fig_rej_moneyline = make_granular_chart(MONEYLINE_KEYS, "Moneyline Rejection Rates")
+    fig_rej_totals = make_granular_chart(TOTALS_KEYS, "Totals Rejection Rates")
+    fig_rej_spreads = make_granular_chart(SPREAD_KEYS, "Spreads Rejection Rates")
+
+    # Moneyline Timeline tracking & Plotting
+    progress_grid = np.linspace(0, 1, 101)
+    interp_mci = []
+    interp_draw = []
+    interp_cry = []
+    
+    for tr in trials:
+        tl = tr.moneyline_timeline
+        if not tl or len(tl["tick"]) < 2:
+            continue
+        ticks = np.array(tl["tick"], dtype=float)
+        # Normalize to 0-1
+        norm_ticks = (ticks - ticks[0]) / (ticks[-1] - ticks[0]) if ticks[-1] > ticks[0] else np.zeros_like(ticks)
+        
+        interp_mci.append(np.interp(progress_grid, norm_ticks, tl["MCI_WIN"]))
+        interp_draw.append(np.interp(progress_grid, norm_ticks, tl["DRAW"]))
+        interp_cry.append(np.interp(progress_grid, norm_ticks, tl["CRY_WIN"]))
+    
+    fig_timeline = go.Figure()
+    if interp_mci:
+        mci_arr = np.array(interp_mci)
+        draw_arr = np.array(interp_draw)
+        cry_arr = np.array(interp_cry)
+        
+        x_vals = progress_grid * 100
+        
+        def add_timeline_trace(name, color, arr):
+            p10 = np.percentile(arr, 10, axis=0)
+            p50 = np.percentile(arr, 50, axis=0)
+            p90 = np.percentile(arr, 90, axis=0)
+            
+            # Shaded area
+            fig_timeline.add_trace(go.Scatter(
+                x=np.concatenate([x_vals, x_vals[::-1]]),
+                y=np.concatenate([p90, p10[::-1]]),
+                fill='toself',
+                fillcolor=color.replace('rgb', 'rgba').replace(')', ', 0.2)'),
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo="skip",
+                showlegend=False
+            ))
+            # Median line
+            fig_timeline.add_trace(go.Scatter(
+                x=x_vals, y=p50,
+                mode='lines',
+                name=f"{name} (Median)",
+                line=dict(color=color, width=2)
+            ))
+            
+        add_timeline_trace("MCI Win", "rgb(99, 102, 241)", mci_arr)
+        add_timeline_trace("Draw", "rgb(168, 162, 158)", draw_arr)
+        add_timeline_trace("CRY Win", "rgb(239, 68, 68)", cry_arr)
+        
+    fig_timeline.update_layout(
+        title="Moneyline Expected Payout Multiplier over Time",
+        height=350, margin=dict(l=50, r=20, t=50, b=50),
+        xaxis=dict(title="Simulation Progress (%)", ticksuffix="%"),
+        yaxis=dict(title="Payout Multiplier", rangemode="tozero"),
+        plot_bgcolor="#1a1d27", paper_bgcolor="#1a1d27", font=dict(color="#94a3b8"),
+        hovermode="x unified"
+    )
 
     # Trial slider — first 50 trials
     slider_trials = sorted(terminal_df["trial_id"].unique())[:50]
@@ -183,18 +312,26 @@ def _run_simulation(run_id: str, cfg: SimConfig) -> None:
             "mean_gini": mean_gini,
             "n_trials": cfg.n_trials,
             "n_agents": cfg.n_agents,
+            "mean_house_pnl": mean_house_pnl,
+            "mean_gini": mean_gini,
+            "rejection_rates": rejection_rates,
             "conservation_error": cons["max_relative_error"],
         },
         "charts": {
-            "supply": hm_json(mean_supply, "Mean Terminal OT Supply"),
-            "payout": hm_json(mean_payout, "Mean Marginal Payout Multiplier", "Magma"),
-            "realized": hm_json(realized, "Realized Payout / Unit (when cell wins)", "Reds", ".1f"),
-            "winfreq": hm_json(win_freq, "Empirical Winner Frequency", "Blues", ".3f"),
+            "supply": hm_json(mean_supply, "Mean Terminal Supply"),
+            "winfreq": hm_json(win_freq, "Empirical Winner Freq"),
+            "payout": hm_json(true_multiplier, "True Payout Multiplier (Pool/Supply)", colorscale="Magma"),
+            "realized": hm_json(realized, "Mean Realised Payout When Winning", colorscale="Reds"),
             "pnl": fig_pnl.to_json(),
             "lorenz": fig_lorenz.to_json(),
             "roi": fig_roi.to_json(),
             "slider": fig_slider.to_json(),
-        },
+            "rejections": fig_rej.to_json(),
+            "rej_moneyline": fig_rej_moneyline.to_json(),
+            "rej_totals": fig_rej_totals.to_json(),
+            "rej_spreads": fig_rej_spreads.to_json(),
+            "timeline": fig_timeline.to_json(),
+        }
     }
     store["status"] = "done"
     store["progress"] = 100
@@ -226,8 +363,21 @@ def run():
         except (ValueError, TypeError):
             return default
 
-    winner_mode = data.get("winner_distribution", "realistic")
-    strategy = data.get("agent_strategy", "uniform_random")
+    winner_mode = data.get("winner_distribution", "screenshot_table")
+    strategy = data.get("agent_strategy", "custom_mix")
+    
+    ml_win = _float("ml_win", 60.0)
+    ml_draw = _float("ml_draw", 20.0)
+    ml_loss = _float("ml_loss", 20.0)
+    
+    if abs((ml_win + ml_draw + ml_loss) - 100.0) > 0.01:
+        return {"error": "Moneyline probabilities must sum to 100%."}, 400
+        
+    meta_trade_mix = {
+        "MCI_WIN": ml_win / 100.0,
+        "DRAW": ml_draw / 100.0,
+        "CRY_WIN": ml_loss / 100.0,
+    }
 
     try:
         cfg = SimConfig(
@@ -239,6 +389,7 @@ def run():
             init_mcap_max=_float("init_mcap_max", 10.0),
             winner_mode=winner_mode,
             strategy=strategy,
+            meta_trade_mix=meta_trade_mix,
             seed=_int("seed", 1234),
         )
     except ValueError as exc:
@@ -285,4 +436,4 @@ def result(run_id: str):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5001, debug=False)

@@ -10,6 +10,19 @@ from scipy.stats import poisson
 from .market import GRID_SIZE, MarketState, mcap
 
 
+RAW_SCREENSHOT_PROBS = np.array([
+    [0.0809, 0.0472, 0.0288, 0.0148, 0.0062, 0.0018, 0.0013, 0.0018],
+    [0.1416, 0.0954, 0.0394, 0.0176, 0.0080, 0.0018, 0.0029, 0.0018],
+    [0.0864, 0.1183, 0.0363, 0.0112, 0.0044, 0.0023, 0.0003, 0.0003],
+    [0.0443, 0.0529, 0.0335, 0.0073, 0.0008, 0.0003, 0.0005, 0.0005],
+    [0.0187, 0.0241, 0.0132, 0.0023, 0.0021, 0.0000, 0.0000, 0.0000],
+    [0.0054, 0.0054, 0.0070, 0.0008, 0.0000, 0.0000, 0.0003, 0.0000],
+    [0.0039, 0.0086, 0.0008, 0.0016, 0.0000, 0.0008, 0.0000, 0.0003],
+    [0.0054, 0.0054, 0.0008, 0.0016, 0.0000, 0.0008, 0.0000, 0.0000],
+])
+SCREENSHOT_PROBS = RAW_SCREENSHOT_PROBS / RAW_SCREENSHOT_PROBS.sum()
+
+
 def _truncated_poisson_probs(lam: float, k: int = GRID_SIZE) -> np.ndarray:
     """P(X=0), P(X=1), ..., P(X=k-2), P(X>=k-1). Sums to 1."""
     pmf = poisson.pmf(np.arange(k - 1), lam)
@@ -39,6 +52,8 @@ def winner_probabilities(mode: str) -> np.ndarray:
         grid = np.zeros((GRID_SIZE, GRID_SIZE))
         grid[i, j] = 1.0
         return grid
+    if mode == "screenshot_table":
+        return SCREENSHOT_PROBS.copy()
     raise ValueError(f"Unknown winner mode: {mode}")
 
 

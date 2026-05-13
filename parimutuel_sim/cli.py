@@ -45,17 +45,17 @@ def parse_args(argv=None) -> SimConfig:
     p.add_argument(
         "--winner-distribution",
         type=str,
-        default="realistic",
+        default="screenshot_table",
         help="uniform | realistic | fixed:i,j",
     )
     p.add_argument(
         "--agent-strategy",
         type=str,
-        default="mixed",
+        default="custom_mix",
         choices=list(ALL_STRATEGIES),
         help=(
-            "Per-agent action strategy. The default 'mixed' assigns each agent "
-            "either --meta-strategy (with probability --meta-agent-fraction) or "
+            "Per-agent action strategy. The default 'custom_mix' uses the strategy_mix "
+            "proportions. The 'mixed' assigns each agent either --meta-strategy or "
             "--cell-strategy. The other values are single-strategy modes used by "
             "all agents."
         ),
@@ -404,6 +404,11 @@ per-trial slider over the 8×8 final-supply grid.
 
 
 def _format_strategy(cfg) -> str:
+    if cfg.strategy == "custom_mix":
+        if cfg.strategy_mix:
+            parts = [f"{v:.0%} {k}" for k, v in cfg.strategy_mix.items() if v > 0]
+            return f"custom_mix ({', '.join(parts)})"
+        return "custom_mix"
     if cfg.strategy == "mixed":
         return (
             f"mixed ({cfg.meta_agent_fraction:.0%} {cfg.meta_strategy} / "

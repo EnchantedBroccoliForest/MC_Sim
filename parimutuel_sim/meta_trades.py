@@ -37,12 +37,58 @@ def _moneyline_buckets(n: int = 8) -> list[MetaTradeDef]:
     ]
 
 
+def _spread_buckets(n: int = 8) -> list[MetaTradeDef]:
+    """Typical soccer spreads (e.g., +/- 1.5 goals)."""
+    return [
+        MetaTradeDef("MCI_MINUS_1_5", "spread", "MCI -1.5", tuple((i, j) for i in range(n) for j in range(n) if i >= j + 2)),
+        MetaTradeDef("CRY_PLUS_1_5", "spread", "CRY +1.5", tuple((i, j) for i in range(n) for j in range(n) if j >= i - 1)),
+        MetaTradeDef("CRY_MINUS_1_5", "spread", "CRY -1.5", tuple((i, j) for i in range(n) for j in range(n) if j >= i + 2)),
+        MetaTradeDef("MCI_PLUS_1_5", "spread", "MCI +1.5", tuple((i, j) for i in range(n) for j in range(n) if i >= j - 1)),
+    ]
+
+
+def _totals_buckets(n: int = 8) -> list[MetaTradeDef]:
+    """Typical soccer totals (e.g., Over/Under 2.5 goals)."""
+    return [
+        MetaTradeDef("OVER_1_5", "totals", "Over 1.5", tuple((i, j) for i in range(n) for j in range(n) if i + j >= 2)),
+        MetaTradeDef("UNDER_1_5", "totals", "Under 1.5", tuple((i, j) for i in range(n) for j in range(n) if i + j <= 1)),
+        MetaTradeDef("OVER_2_5", "totals", "Over 2.5", tuple((i, j) for i in range(n) for j in range(n) if i + j >= 3)),
+        MetaTradeDef("UNDER_2_5", "totals", "Under 2.5", tuple((i, j) for i in range(n) for j in range(n) if i + j <= 2)),
+        MetaTradeDef("OVER_3_5", "totals", "Over 3.5", tuple((i, j) for i in range(n) for j in range(n) if i + j >= 4)),
+        MetaTradeDef("UNDER_3_5", "totals", "Under 3.5", tuple((i, j) for i in range(n) for j in range(n) if i + j <= 3)),
+    ]
+
+
+def _exact_score_buckets(n: int = 8) -> list[MetaTradeDef]:
+    """Every exact score combination as a meta trade."""
+    buckets = []
+    for i in range(n):
+        for j in range(n):
+            disp_i = "≥7" if i == n - 1 else str(i)
+            disp_j = "≥7" if j == n - 1 else str(j)
+            key = f"EXACT_{i}_{j}"
+            name = f"Exact Score {disp_i}-{disp_j}"
+            buckets.append(MetaTradeDef(key, "exact_score", name, ((i, j),)))
+    return buckets
+
+
 # Registry exposed to the rest of the sim. Keep this data-driven so future
 # sets (Total Goals, Winning Margin, Exact Score, ...) can be added without
 # touching call sites.
-META_TRADES: dict[str, MetaTradeDef] = {m.key: m for m in _moneyline_buckets()}
+_all_meta_trades = (
+    _moneyline_buckets()
+    + _spread_buckets()
+    + _totals_buckets()
+    + _exact_score_buckets()
+)
 
-MONEYLINE_KEYS: tuple[str, ...] = ("MCI_WIN", "DRAW", "CRY_WIN")
+META_TRADES: dict[str, MetaTradeDef] = {m.key: m for m in _all_meta_trades}
+
+MONEYLINE_KEYS: tuple[str, ...] = tuple(m.key for m in _moneyline_buckets())
+SPREAD_KEYS: tuple[str, ...] = tuple(m.key for m in _spread_buckets())
+TOTALS_KEYS: tuple[str, ...] = tuple(m.key for m in _totals_buckets())
+EXACT_SCORE_KEYS: tuple[str, ...] = tuple(m.key for m in _exact_score_buckets())
+ALL_META_KEYS: tuple[str, ...] = tuple(META_TRADES.keys())
 
 
 def allocate(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -11,12 +12,21 @@ from .agents import (
     CELL_STRATEGIES,
     META_STRATEGIES,
     MIXED_STRATEGY,
+    CUSTOM_MIX_STRATEGY,
     Agent,
     assign_strategies,
     make_agents,
     pick_action,
 )
-from .market import GRID_SIZE, SEED_RNG_SALT, MarketState, marginal_payout, mcap
+from .market import GRID_SIZE, SEED_RNG_SALT, MarketState, marginal_payout, mcap, mint_units, marginal_price
+from .meta_trades import (
+    META_TRADES,
+    allocate,
+    MONEYLINE_KEYS,
+    SPREAD_KEYS,
+    TOTALS_KEYS,
+    EXACT_SCORE_KEYS,
+)
 from .settlement import draw_winner, settle, winner_probabilities
 
 
@@ -30,10 +40,9 @@ class SimConfig:
     n_trials: int = 1000
     init_mcap_min: float = 0.10
     init_mcap_max: float = 10.0
-    winner_mode: str = "realistic"
-    # Default is the 80/20 mixed-cohort model: 80% of agents trade via the
-    # moneyline meta buckets, 20% mint single cells uniformly at random.
-    strategy: str = "mixed"
+    winner_mode: str = "screenshot_table"
+    # Default is now custom_mix with 80% moneyline, 10% totals, 5% spreads, 5% exact scores
+    strategy: str = "custom_mix"
     min_mint: float = 1.0
     max_per_mint: float = 50.0
     min_mint_threshold: float = 0.01
@@ -46,6 +55,13 @@ class SimConfig:
     meta_agent_fraction: float = 0.8
     cell_strategy: str = "uniform_random"
     meta_strategy: str = "moneyline_uniform"
+    # Custom mix proportions. Used when ``strategy == "custom_mix"``.
+    strategy_mix: Optional[dict] = field(default_factory=lambda: {
+        "moneyline_weighted": 0.80,
+        "totals_uniform": 0.10,
+        "spreads_uniform": 0.05,
+        "exact_score_weighted": 0.05,
+    })
 
     def __post_init__(self):
         if self.n_agents < 0:
@@ -70,7 +86,10 @@ class SimConfig:
             raise ValueError("log_events_for_first_k must be >= 0")
         if not (0.0 <= self.meta_agent_fraction <= 1.0):
             raise ValueError("meta_agent_fraction must be in [0, 1]")
-        if self.strategy == MIXED_STRATEGY:
+        if self.strategy == CUSTOM_MIX_STRATEGY:
+            if not self.strategy_mix:
+                raise ValueError("strategy_mix must be provided for custom_mix strategy")
+        elif self.strategy == MIXED_STRATEGY:
             if self.cell_strategy not in CELL_STRATEGIES:
                 raise ValueError(
                     f"cell_strategy must be one of {CELL_STRATEGIES}, got {self.cell_strategy!r}"
@@ -100,6 +119,21 @@ class TrialResult:
     house_terminal_value: float
     event_log: Optional[List[dict]] = None
     meta_trade_log: list = field(default_factory=list)
+    rejection_stats: dict = field(default_factory=dict)
+    granular_stats: dict = field(default_factory=dict)
+    moneyline_timeline: dict = field(default_factory=dict)
+
+def categorize_action(action) -> str:
+    if action.kind == "cell":
+        return "Specific scores"
+    k = action.meta_key
+    if k in MONEYLINE_KEYS:
+        return "Moneyline"
+    if k in TOTALS_KEYS:
+        return "Totals"
+    if k in SPREAD_KEYS:
+        return "Spreads"
+    return "Specific scores"
 
 
 def _step_agent(
@@ -129,12 +163,20 @@ def _step_agent(
 
     if action.kind == "cell":
         cell = action.cell
+        pre_supply = float(state.supply[cell])
+        post_supply, units = mint_units(pre_supply, action.amount)
+        if units <= 0:
+            return None
+        post_mcap_total = pre_mcap_total + action.amount
+        multiplier = (units / action.amount) * (post_mcap_total / post_supply)
+        if multiplier <= 1.0:
+            return {"rejected": True, "category": categorize_action(action)}
+
         units = state.mint(cell, action.amount)
         agent.cash -= action.amount
         agent.add_holding(cell, units)
-        post_mcap_total = float(state.mcap_grid.sum())
         # Conservation invariant for the step: cash spent equals mcap delta.
-        assert abs((post_mcap_total - pre_mcap_total) - action.amount) <= 1e-6 * max(
+        assert abs((float(state.mcap_grid.sum()) - pre_mcap_total) - action.amount) <= 1e-6 * max(
             1.0, action.amount
         ), "single-cell mint broke step conservation"
         return {
@@ -152,13 +194,29 @@ def _step_agent(
         }
 
     # Meta trade
+    cells = META_TRADES[action.meta_key].cells
+    mcaps = {c: float(state.mcap_grid[c]) for c in cells}
+    alloc = allocate(action.amount, cells, mcaps)
+    post_mcap_total = pre_mcap_total + action.amount
+    passed = False
+    for c, cash in alloc.items():
+        if cash > 0:
+            pre_supply = float(state.supply[c])
+            post_supply, units = mint_units(pre_supply, cash)
+            if units > 0:
+                multiplier = (units / action.amount) * (post_mcap_total / post_supply)
+                if multiplier > 1.0:
+                    passed = True
+                    break
+    if not passed:
+        return {"rejected": True, "category": categorize_action(action)}
+
     fill = state.mint_meta(action.meta_key, action.amount, agent_id=agent.agent_id)
     agent.cash -= action.amount
     for cell, _cash, units, _pre, _post in fill.legs:
         if units > 0:
             agent.add_holding(cell, units)
-    post_mcap_total = float(state.mcap_grid.sum())
-    assert abs((post_mcap_total - pre_mcap_total) - action.amount) <= 1e-6 * max(
+    assert abs((float(state.mcap_grid.sum()) - pre_mcap_total) - action.amount) <= 1e-6 * max(
         1.0, action.amount
     ), "meta-trade legs broke step conservation"
     fill.tick = tick
@@ -203,7 +261,18 @@ def run_one_trial(
         meta_agent_fraction=cfg.meta_agent_fraction,
         cell_strategy=cfg.cell_strategy,
         meta_strategy=cfg.meta_strategy,
+        strategy_mix=cfg.strategy_mix,
     )
+    attempts = {
+        "Moneyline": 0, "Totals": 0, "Spreads": 0, "Specific scores": 0
+    }
+    rejections = {
+        "Moneyline": 0, "Totals": 0, "Spreads": 0, "Specific scores": 0
+    }
+    
+    attempts_granular = collections.defaultdict(int)
+    rejections_granular = collections.defaultdict(int)
+
     if not agents:
         # Degenerate: just settle on the seeded state.
         probs = winner_probabilities(cfg.winner_mode)
@@ -223,6 +292,8 @@ def run_one_trial(
             house_seed_total=house_seed_total,
             house_terminal_value=house_terminal_value,
             event_log=[] if log_events else None,
+            rejection_stats={"attempts": attempts, "rejections": rejections},
+            granular_stats={"attempts": attempts_granular, "rejections": rejections_granular},
         )
 
     event_log: Optional[List[dict]] = [] if log_events else None
@@ -231,19 +302,67 @@ def run_one_trial(
     active_ids = [a.agent_id for a in agents]
     by_id = {a.agent_id: a for a in agents}
     tick = 0
+    consecutive_passes = 0
+    max_passes = len(active_ids) * 5
+    
+    timeline = {"tick": [], "MCI_WIN": [], "DRAW": [], "CRY_WIN": []}
+    mci_cells = META_TRADES["MCI_WIN"].cells
+    draw_cells = META_TRADES["DRAW"].cells
+    cry_cells = META_TRADES["CRY_WIN"].cells
+
+    def log_timeline(current_tick):
+        total_pool = float(state.mcap_grid.sum())
+        timeline["tick"].append(current_tick)
+        for key, cells in [("MCI_WIN", mci_cells), ("DRAW", draw_cells), ("CRY_WIN", cry_cells)]:
+            p_bucket = sum(float(marginal_price(state.supply[c])) for c in cells)
+            timeline[key].append(total_pool / p_bucket if p_bucket > 0 else 0.0)
+
     while active_ids:
+        if tick % 5 == 0:
+            log_timeline(tick)
+
+        if consecutive_passes > max_passes:
+            break
+            
         idx = int(rng.integers(len(active_ids)))
         agent = by_id[active_ids[idx]]
         if agent.cash <= cfg.min_mint_threshold:
-            # Drop this agent and continue.
             active_ids.pop(idx)
             continue
+            
         ev = _step_agent(state, agent, cfg, rng, tick=tick)
         if ev is not None:
-            tick += 1
-        if event_log is not None and ev is not None:
-            ev["trial_id"] = trial_id
-            event_log.append(ev)
+            mkey = ev.get("meta_key") or "cell"
+            if ev.get("rejected"):
+                cat = ev["category"]
+                attempts[cat] += 1
+                rejections[cat] += 1
+                attempts_granular[mkey] += 1
+                rejections_granular[mkey] += 1
+                consecutive_passes += 1
+            else:
+                if ev.get("kind") == "cell":
+                    cat = "Specific scores"
+                elif ev.get("meta_key") in MONEYLINE_KEYS:
+                    cat = "Moneyline"
+                elif ev.get("meta_key") in TOTALS_KEYS:
+                    cat = "Totals"
+                elif ev.get("meta_key") in SPREAD_KEYS:
+                    cat = "Spreads"
+                else:
+                    cat = "Specific scores"
+                attempts[cat] += 1
+                attempts_granular[mkey] += 1
+                
+                tick += 1
+                consecutive_passes = 0
+                if event_log is not None:
+                    ev["trial_id"] = trial_id
+                    event_log.append(ev)
+        else:
+            # Should not happen anymore, but just in case
+            consecutive_passes += 1
+            
         if agent.cash <= cfg.min_mint_threshold:
             active_ids.pop(idx)
 
@@ -297,6 +416,9 @@ def run_one_trial(
         house_terminal_value=house_terminal_value,
         event_log=event_log,
         meta_trade_log=list(state.meta_trade_log),
+        rejection_stats={"attempts": attempts, "rejections": rejections},
+        granular_stats={"attempts": attempts_granular, "rejections": rejections_granular},
+        moneyline_timeline=timeline,
     )
 
 
