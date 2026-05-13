@@ -534,6 +534,7 @@
             <span class="help" tabindex="0" data-tip="Uniform random: agents pick cells randomly with no insight. Weighted by marginal payout: agents bias toward cells offering a better marginal payout multiplier — closer to a 'smart money' cohort.">?</span>
           </div>
           <select id="agent_strategy">
+            <option value="custom_mix">Custom Mix (80% ML, 10% Totals, 5% Spreads, 5% Exact)</option>
             <option value="uniform_random">Uniform random</option>
             <option value="weighted_by_marginal_payout">Weighted by marginal payout</option>
           </select>
@@ -542,12 +543,39 @@
         <div class="field">
           <div class="label-row">
             <label for="winner_distribution">Winner distribution</label>
-            <span class="help" tabindex="0" data-tip="Realistic: scoreline is drawn from independent Poisson(1.6, 1.1) goal counts — a soccer-flavoured prior. Uniform: every cell equally likely (useful as a sanity check).">?</span>
+            <span class="help" tabindex="0" data-tip="Screenshot table uses the custom exactly transcribed probabilities. Realistic: scoreline is drawn from independent Poisson(1.6, 1.1) goal counts.">?</span>
           </div>
           <select id="winner_distribution">
+            <option value="screenshot_table">Screenshot Table (Custom)</option>
             <option value="realistic">Realistic (Poisson 1.6 / 1.1)</option>
             <option value="uniform">Uniform</option>
           </select>
+        </div>
+      </div>
+
+      <!-- Moneyline -->
+      <div class="section">
+        <div class="section-label">Moneyline Configuration</div>
+        <div class="section-desc">Override the default Moneyline probabilities. Must sum to 100%.</div>
+        <div class="row2">
+          <div class="field">
+            <div class="label-row">
+              <label for="ml_win">Team A Win %</label>
+            </div>
+            <input type="number" id="ml_win" value="60" min="0" max="100">
+          </div>
+          <div class="field">
+            <div class="label-row">
+              <label for="ml_draw">Draw %</label>
+            </div>
+            <input type="number" id="ml_draw" value="20" min="0" max="100">
+          </div>
+        </div>
+        <div class="field" style="margin-top: 12px;">
+          <div class="label-row">
+            <label for="ml_loss">Team B Win %</label>
+          </div>
+          <input type="number" id="ml_loss" value="20" min="0" max="100">
         </div>
       </div>
     </div>
@@ -674,31 +702,86 @@
           <h2>Outcome-grid heatmaps</h2>
           <p class="section-desc">
             Each 8×8 cell is a possible final scoreline (rows = MCI goals, columns = CRY goals).
-            Blue = empirical winner frequency · Viridis = mean OT supply · Magma = marginal payout multiplier · Reds = realised payout per unit when a cell wins.
+            Blue = empirical winner frequency · Viridis = mean OT supply · Magma = true payout multiplier · Reds = realised payout per unit when a cell wins.
           </p>
         </div>
         <div class="chart-grid-2">
-          <div class="chart-card"><div id="chart-supply"></div></div>
-          <div class="chart-card"><div id="chart-winfreq"></div></div>
-          <div class="chart-card"><div id="chart-payout"></div></div>
-          <div class="chart-card"><div id="chart-realized"></div></div>
+          <div class="chart-card">
+            <h3>Terminal Supply</h3>
+            <div id="chart-supply"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Empirical Winner Frequency</h3>
+            <div id="chart-winfreq"></div>
+          </div>
+          <div class="chart-card">
+            <h3>True Payout Multiplier</h3>
+            <div id="chart-payout"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Realised Payout (When Winning)</h3>
+            <div id="chart-realized"></div>
+          </div>
         </div>
       </div>
 
       <div class="chart-section">
         <div class="chart-section-header">
-          <h2>Agent economics</h2>
+          <h2>Agent economics & Liquidity</h2>
           <p class="section-desc">
             Distribution of outcomes across all (agent × trial) pairs. The Lorenz curve shows
-            inequality of terminal cash; the dashed diagonal is perfect equality.
+            inequality of terminal cash. The rejection chart shows the % of cases agents chose not to trade because the expected return was ≤ 1.0.
           </p>
         </div>
         <div class="chart-grid-2">
-          <div class="chart-card"><div id="chart-pnl"></div></div>
-          <div class="chart-card"><div id="chart-lorenz"></div></div>
+          <div class="chart-card">
+            <h3>P&L Distribution</h3>
+            <div id="chart-pnl"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Terminal Cash Lorenz Curve</h3>
+            <div id="chart-lorenz"></div>
+          </div>
+        </div>
+        <div class="chart-grid-2" style="margin-top:14px">
+          <div class="chart-card">
+            <h3>ROI vs Starting Balance</h3>
+            <div id="chart-roi"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Overall Trade Rejections</h3>
+            <div id="chart-rejections"></div>
+          </div>
         </div>
         <div style="margin-top:14px">
-          <div class="chart-card"><div id="chart-roi"></div></div>
+          <h3>Simulation Timeline</h3>
+          <div class="chart-card"><div id="chart-timeline"></div></div>
+        </div>
+      </div>
+      
+      <div class="chart-section">
+        <div class="chart-section-header">
+          <h2>Granular Market Liquidity</h2>
+          <p class="section-desc">
+            Detailed breakdown of Trade Rejection Rates (multiplier ≤ 1.0) for every single meta-trade scenario. 
+            This shows exactly which odds are most likely to hit equilibrium quickly.
+          </p>
+        </div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <h3>Moneyline Odds</h3>
+            <div id="chart-rej-moneyline"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Spreads (Handicaps)</h3>
+            <div id="chart-rej-spreads"></div>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <div class="chart-card">
+            <h3>Totals (Over/Under)</h3>
+            <div id="chart-rej-totals"></div>
+          </div>
         </div>
       </div>
 
@@ -728,9 +811,9 @@ const PLOTLY_LAYOUT_PATCH = {
 };
 
 const PRESETS = {
-  quick:    { n_trials: 50,   n_agents: 50,  seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "uniform_random",            winner_distribution: "realistic" },
-  default:  { n_trials: 200,  n_agents: 100, seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "uniform_random",            winner_distribution: "realistic" },
-  detailed: { n_trials: 1000, n_agents: 200, seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "weighted_by_marginal_payout", winner_distribution: "realistic" },
+  quick:    { n_trials: 50,   n_agents: 50,  seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "custom_mix", winner_distribution: "screenshot_table" },
+  default:  { n_trials: 200,  n_agents: 100, seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "custom_mix", winner_distribution: "screenshot_table" },
+  detailed: { n_trials: 1000, n_agents: 200, seed: 1234, balance_min: 50, balance_max: 5000, init_mcap_min: 0.1, init_mcap_max: 10, agent_strategy: "weighted_by_marginal_payout", winner_distribution: "screenshot_table" },
 };
 
 function applyPreset(name) {
@@ -796,6 +879,12 @@ function validateInputs() {
   if (mMax < mMin) return "Max house seed must be at least Min house seed.";
   if (+document.getElementById("n_trials").value <= 0) return "Trials must be at least 1.";
   if (+document.getElementById("n_agents").value < 0) return "Agents must be ≥ 0.";
+  
+  const mlWin = +document.getElementById("ml_win").value;
+  const mlDraw = +document.getElementById("ml_draw").value;
+  const mlLoss = +document.getElementById("ml_loss").value;
+  if (Math.abs(mlWin + mlDraw + mlLoss - 100) > 0.01) return "Moneyline probabilities must sum to 100%.";
+  
   return null;
 }
 
@@ -822,6 +911,9 @@ async function startRun() {
     init_mcap_max: +document.getElementById("init_mcap_max").value,
     agent_strategy: document.getElementById("agent_strategy").value,
     winner_distribution: document.getElementById("winner_distribution").value,
+    ml_win: +document.getElementById("ml_win").value,
+    ml_draw: +document.getElementById("ml_draw").value,
+    ml_loss: +document.getElementById("ml_loss").value,
   };
 
   let runId;
@@ -910,6 +1002,11 @@ async function startRun() {
   renderChart("chart-pnl", c.pnl);
   renderChart("chart-lorenz", c.lorenz);
   renderChart("chart-roi", c.roi);
+  renderChart("chart-rejections", c.rejections);
+  renderChart("chart-rej-moneyline", c.rej_moneyline);
+  renderChart("chart-rej-totals", c.rej_totals);
+  renderChart("chart-rej-spreads", c.rej_spreads);
+  renderChart("chart-timeline", c.timeline);
   renderChart("chart-slider", c.slider);
 
   document.getElementById("chartsWrap").classList.add("visible");

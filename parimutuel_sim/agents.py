@@ -8,12 +8,21 @@ from typing import Dict, Mapping, Optional, Tuple
 import numpy as np
 
 from .market import GRID_SIZE, MarketState, marginal_payout
-from .meta_trades import MONEYLINE_KEYS
+from .meta_trades import MONEYLINE_KEYS, SPREAD_KEYS, TOTALS_KEYS, EXACT_SCORE_KEYS
+from .settlement import SCREENSHOT_PROBS
 
-META_STRATEGIES = ("moneyline_uniform", "moneyline_weighted")
+META_STRATEGIES = (
+    "moneyline_uniform",
+    "moneyline_weighted",
+    "spreads_uniform",
+    "totals_uniform",
+    "exact_score_uniform",
+    "exact_score_weighted",
+)
 CELL_STRATEGIES = ("uniform_random", "weighted_by_marginal_payout")
 MIXED_STRATEGY = "mixed"
-ALL_STRATEGIES = CELL_STRATEGIES + META_STRATEGIES + (MIXED_STRATEGY,)
+CUSTOM_MIX_STRATEGY = "custom_mix"
+ALL_STRATEGIES = CELL_STRATEGIES + META_STRATEGIES + (MIXED_STRATEGY, CUSTOM_MIX_STRATEGY)
 
 
 @dataclass
@@ -91,6 +100,16 @@ def pick_meta_key(
                 raise ValueError("moneyline_weighted prior has non-positive total")
             weights = weights / s
         return str(rng.choice(MONEYLINE_KEYS, p=weights))
+    if strategy == "spreads_uniform":
+        return str(rng.choice(SPREAD_KEYS))
+    if strategy == "totals_uniform":
+        return str(rng.choice(TOTALS_KEYS))
+    if strategy == "exact_score_uniform":
+        return str(rng.choice(EXACT_SCORE_KEYS))
+    if strategy == "exact_score_weighted":
+        flat_probs = SCREENSHOT_PROBS.flatten()
+        idx = int(rng.choice(len(EXACT_SCORE_KEYS), p=flat_probs))
+        return EXACT_SCORE_KEYS[idx]
     raise ValueError(f"Unknown meta strategy: {strategy}")
 
 
@@ -150,6 +169,7 @@ def assign_strategies(
     meta_agent_fraction: float = 0.8,
     cell_strategy: str = "uniform_random",
     meta_strategy: str = "moneyline_uniform",
+    strategy_mix: Optional[Mapping[str, float]] = None,
 ) -> None:
     """Set ``agent.strategy`` on every agent.
 
@@ -158,7 +178,19 @@ def assign_strategies(
     For ``strategy == "mixed"``, each agent independently picks the meta
     sub-strategy with probability ``meta_agent_fraction`` and the cell
     sub-strategy otherwise.
+    For ``strategy == "custom_mix"``, it uses ``strategy_mix``.
     """
+    if strategy == CUSTOM_MIX_STRATEGY:
+        if strategy_mix is None:
+            raise ValueError("strategy_mix must be provided for custom_mix strategy")
+        strategies = list(strategy_mix.keys())
+        probs = list(strategy_mix.values())
+        if abs(sum(probs) - 1.0) > 1e-6:
+            raise ValueError("strategy_mix probabilities must sum to 1")
+        picks = rng.choice(strategies, p=probs, size=len(agents))
+        for a, s in zip(agents, picks):
+            a.strategy = str(s)
+        return
     if strategy == MIXED_STRATEGY:
         if cell_strategy not in CELL_STRATEGIES:
             raise ValueError(f"cell_strategy must be one of {CELL_STRATEGIES}, got {cell_strategy!r}")
