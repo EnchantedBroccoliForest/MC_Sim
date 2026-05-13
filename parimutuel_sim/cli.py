@@ -263,16 +263,17 @@ def main(argv=None) -> int:
         print(f"  WARNING: found NaN/Inf values: {nan_inf}")
 
     # --- Plots ---
+    # Keep only the three plots that carry distinct signal: the combined
+    # capital-vs-wins panel (calibration), the realized payout heatmap (unit
+    # economics), and the agent P&L histogram + cohort violin (outcomes).
+    # The previous mean_supply / mean_payout / roi_vs_balance / lorenz /
+    # winner_vs_supply outputs were either redundant with these or low-signal.
     print("Rendering plots...")
     plots_dir = run_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
-    viz.plot_mean_terminal_supply(terminal_df, plots_dir / "mean_supply.png")
-    viz.plot_mean_marginal_payout(terminal_df, plots_dir / "mean_payout.png")
+    viz.plot_capital_vs_wins(terminal_df, trials_df, plots_dir / "capital_vs_wins.png")
     viz.plot_realized_payout_when_winner(terminal_df, trials_df, plots_dir / "realized_payout.png")
     viz.plot_pnl_histogram(agent_df, plots_dir / "pnl_distribution.png")
-    viz.plot_roi_vs_balance(agent_df, plots_dir / "roi_vs_balance.png")
-    viz.plot_lorenz(agent_df, plots_dir / "lorenz.png")
-    viz.plot_winner_vs_supply(terminal_df, trials_df, plots_dir / "winner_vs_supply.png")
 
     print("Building interactive dashboard...")
     viz.build_dashboard(
@@ -312,84 +313,122 @@ def write_report(
     meta_summary_df=None,
     meta_volume=None,
 ):
-    median_roi = agent_df["roi"].median()
-    mean_pnl = agent_df["pnl"].mean()
-    pct_pos = (agent_df["pnl"] > 0).mean()
+    median_roi = float(agent_df["roi"].median())
+    mean_pnl = float(agent_df["pnl"].mean())
+    pct_pos = float((agent_df["pnl"] > 0).mean())
     winner_freq = np.array(summary["winner_frequency_grid"])
     flat_idx = int(np.argmax(winner_freq))
     modal_i, modal_j = divmod(flat_idx, GRID_SIZE)
-    modal_label = f"({modal_i}, {modal_j})"
+    modal_score = viz.score_label(modal_i, modal_j)
+    modal_freq = float(winner_freq[modal_i, modal_j])
 
-    # Cohort analysis: did agents who concentrated holdings in the modal cell do better?
-    # Use the actual winning trials to measure.
     winners_in_modal = trials_df[
         (trials_df.winner_i == modal_i) & (trials_df.winner_j == modal_j)
     ]
-    if not winners_in_modal.empty:
-        modal_payout = winners_in_modal["payout_per_unit_W"].mean()
-    else:
-        modal_payout = float("nan")
+    modal_payout = (
+        float(winners_in_modal["payout_per_unit_W"].mean())
+        if not winners_in_modal.empty
+        else float("nan")
+    )
 
-    tv_dist = summary["winner_total_variation_distance"]
-    seed_pool = summary["house_economics"]["mean_seed_to_pool_ratio"]
-    mean_pool = trials_df["total_pool"].mean()
-    mean_house_pnl = summary["house_economics"]["mean_house_pnl"]
+    tv_dist = float(summary["winner_total_variation_distance"])
+    seed_pool = float(summary["house_economics"]["mean_seed_to_pool_ratio"])
+    mean_pool = float(trials_df["total_pool"].mean())
+    mean_payout_W = float(trials_df["payout_per_unit_W"].mean())
+    mean_house_pnl = float(summary["house_economics"]["mean_house_pnl"])
     house_take_pct = mean_house_pnl / mean_pool if mean_pool > 0 else 0.0
+    mean_house_seed = float(summary["house_economics"]["mean_house_seed_total"])
+
+    tldr = (
+        f"**TL;DR.** Over {cfg.n_trials:,} trials the modal scoreline was "
+        f"**MCI {modal_score} CRY** ({modal_freq:.1%} of trials). "
+        f"**{pct_pos:.0%}** of agents finished positive, median ROI **{median_roi:+.1%}**. "
+        f"The house seeded {seed_pool:.1%} of the pool and skimmed "
+        f"**{house_take_pct:.1%}** of it on average (${mean_house_pnl:,.0f}/trial). "
+        f"Empirical vs configured winner distribution: TV={tv_dist:.3f}."
+    )
 
     md = f"""# Dynamic Parimutuel Monte Carlo — Report
 
-**Run timestamp:** {run_dir.name}
-**Seed:** {cfg.seed}
-**Trials:** {cfg.n_trials} · **Agents per trial:** {cfg.n_agents} · **Strategy:** {_format_strategy(cfg)}
-**Winner prior:** {cfg.winner_mode} · **Wall time:** {elapsed:.1f}s
+**Run timestamp:** {run_dir.name} · **Seed:** {cfg.seed} · **Wall time:** {elapsed:.1f}s
+**Trials:** {cfg.n_trials:,} · **Agents per trial:** {cfg.n_agents} · **Winner prior:** {cfg.winner_mode}
+**Strategy:** {_format_strategy(cfg)}
 
-## Headline stats
+> {tldr}
+
+## Headline numbers
+
+### Pool & payouts
 
 | metric | value |
 |---|---|
-| Total pool (mean across trials) | ${trials_df["total_pool"].mean():,.2f} |
-| Payout per unit on winner (mean) | ${trials_df["payout_per_unit_W"].mean():,.2f} |
-| Mean agent P&L | ${mean_pnl:,.2f} |
-| Median agent ROI | {median_roi:.2%} |
-| Agents finishing positive | {pct_pos:.1%} |
-| Mean Gini of terminal supply | {summary['mean_gini_supply']:.3f} |
-| Mean Gini of terminal cash | {summary['mean_gini_terminal_cash']:.3f} |
-| Mean house seed | ${summary['house_economics']['mean_house_seed_total']:,.2f} |
-| Mean house P&L | ${summary['house_economics']['mean_house_pnl']:,.2f} |
-| Seed / pool ratio | {seed_pool:.4f} |
-| Winner empirical vs expected (TV dist) | {tv_dist:.4f} |
-| Max conservation error (relative) | {summary['conservation']['max_relative_error']:.2e} |
+| Mean pool size | ${mean_pool:,.2f} |
+| Mean payout per unit on winning cell | ${mean_payout_W:,.2f} |
+| Modal winning scoreline | **MCI {modal_score} CRY** ({modal_freq:.1%}) |
+| Mean payout/unit when modal cell wins | ${modal_payout:,.2f} |
 
-## Top takeaways
+### Agents
 
-1. **Modal scoreline is {modal_label}.** When it wins, payout-per-unit averages
-   **${modal_payout:,.2f}**. The empirical winner distribution matches the
-   configured prior with total-variation distance {tv_dist:.4f}.
-2. **House take is ~{house_take_pct:.1%} of pool per trial.** The protocol seeds
-   only {seed_pool:.2%} of the pool but earns mean P&L of ${mean_house_pnl:,.2f}
-   per trial — the seed units in the winning cell get a pro-rata share of the
-   *entire* pool, which is much larger than the seed itself. Agents collectively
-   lose this same amount (conservation).
-3. **Agent fortunes are bimodal:** {pct_pos:.1%} of agents finish positive while
-   the rest lose their stake — only holders of the winning cell are paid. Median
-   ROI of {median_roi:.2%} reflects this winner-take-all geometry.
+| metric | value |
+|---|---|
+| Mean P&L | ${mean_pnl:,.2f} |
+| Median ROI | {median_roi:+.2%} |
+| Finishing in profit | {pct_pos:.1%} |
+| Gini, terminal cash | {summary['mean_gini_terminal_cash']:.3f} |
 
-## Static plots
+### House
 
-- ![](plots/mean_supply.png)
-- ![](plots/mean_payout.png)
-- ![](plots/realized_payout.png)
-- ![](plots/pnl_distribution.png)
-- ![](plots/roi_vs_balance.png)
-- ![](plots/lorenz.png)
-- ![](plots/winner_vs_supply.png)
+| metric | value |
+|---|---|
+| Mean seed | ${mean_house_seed:,.2f} ({seed_pool:.2%} of pool) |
+| Mean P&L | ${mean_house_pnl:,.2f} |
+| Take, share of pool | {house_take_pct:.2%} |
+
+### Calibration & integrity
+
+| metric | value |
+|---|---|
+| Winner TV distance (empirical vs prior) | {tv_dist:.4f} |
+| Max relative conservation error | {summary['conservation']['max_relative_error']:.2e} |
+
+## What this run is telling you
+
+1. **Modal scoreline = MCI {modal_score} CRY** (wins {modal_freq:.1%} of trials).
+   When it does win, holders are paid ${modal_payout:,.2f} per unit on average.
+2. **House take ≈ {house_take_pct:.1%} of pool.** The protocol seeds only
+   {seed_pool:.2%} of dollars yet earns ${mean_house_pnl:,.0f}/trial — the seed
+   units sitting in the winning cell get a pro-rata share of the *entire* pool,
+   which is much larger than the seed itself. Agents collectively lose the
+   matching amount (conservation holds, see table above).
+3. **Winner-take-all geometry.** Only {pct_pos:.0%} of agents finish positive;
+   the rest hold non-winning cells and lose their stake. Median ROI of
+   {median_roi:+.1%} is the dominant lived experience.
+
+## Plots
+
+![Capital vs wins](plots/capital_vs_wins.png)
+
+*Two heatmaps side-by-side: how much capital each cell attracted vs. how often
+it actually won. The red box marks the modal cell of each panel — when those
+boxes line up, agents are well-calibrated to the winner prior.*
+
+![Realised payout per unit](plots/realized_payout.png)
+
+*For every cell, the average payout per OT across trials where that cell won.
+This is what a 1-unit stake on each scoreline is worth, conditional on it
+being the winner.*
+
+![P&L distribution](plots/pnl_distribution.png)
+
+*Left: agent P&L histogram (a fat negative pile + a long positive tail). Right:
+ROI by starting-balance cohort.*
 
 ## Interactive dashboard
 
-Open [`dashboard.html`](dashboard.html) in a browser for KPIs, heatmaps, and a
-per-trial slider over the 8×8 final-supply grid.
+Open [`dashboard.html`](dashboard.html) — KPI cards, an annotated 2×2 grid
+panel, and the P&L distribution. Best viewed in a modern browser.
 
-## Meta Trades
+## Meta trades
 
 {_render_meta_trades_section(cfg, meta_summary_df, meta_volume)}
 
@@ -397,8 +436,8 @@ per-trial slider over the 8×8 final-supply grid.
 
 - `summary.json` — run parameters and aggregate stats
 - `trials.parquet`, `agent_pnl.parquet`, `terminal_grids.parquet` — tabular data
-- `event_log_sample.parquet` — full mint log for the first {cfg.log_events_for_first_k} trials
-- `meta_trades.parquet`, `meta_trade_summary.csv` — meta-trade leg log and per-bucket summary (if any meta trades were placed)
+- `event_log_sample.parquet` — mint log for the first {cfg.log_events_for_first_k} trials
+- `meta_trades.parquet`, `meta_trade_summary.csv` — meta-trade leg log (when present)
 """
     (run_dir / "REPORT.md").write_text(md)
 
@@ -427,8 +466,32 @@ def _render_meta_trades_section(cfg, meta_summary_df, meta_volume) -> str:
             "`--agent-strategy moneyline_weighted` to populate this section."
         )
     share = (meta_volume or {}).get("meta_share_of_agent_volume", 0.0)
+
+    # Show only buckets that were actually traded, sorted by cash desc. Cap to
+    # the top 12 so exact-score families don't blow up the table; mention the
+    # tail in a one-liner.
+    active = (
+        meta_summary_df[meta_summary_df["n_trades"] > 0]
+        .sort_values("total_cash", ascending=False)
+        .reset_index(drop=True)
+    )
+    if active.empty:
+        return "No meta trades were placed."
+
+    TOP_N = 12
+    head = active.head(TOP_N)
+    tail = active.iloc[TOP_N:]
+    tail_note = ""
+    if not tail.empty:
+        tail_note = (
+            f"\n\n*Plus {len(tail)} smaller buckets totalling "
+            f"${tail['total_cash'].sum():,.0f} "
+            f"({tail['share_of_agent_spend'].sum():.1%} of agent spend) — "
+            f"see `meta_trade_summary.csv` for the full list.*"
+        )
+
     rows = ["| meta key | trades | total cash | mean size | share of agent spend |", "|---|---|---|---|---|"]
-    for _, r in meta_summary_df.iterrows():
+    for _, r in head.iterrows():
         rows.append(
             f"| {r['meta_key']} | {int(r['n_trades']):,} | "
             f"${r['total_cash']:,.2f} | ${r['mean_trade_size']:,.2f} | "
@@ -436,10 +499,10 @@ def _render_meta_trades_section(cfg, meta_summary_df, meta_volume) -> str:
         )
     table = "\n".join(rows)
     return (
-        f"Meta trades routed **{share:.1%}** of agent-side pool dollars in this run.\n\n"
-        f"{table}\n\n"
-        "See the dashboard `Meta Trades` section for per-bucket bar/time-series "
-        "charts and the share-of-mcap heatmap overlays."
+        f"Meta trades routed **{share:.1%}** of agent-side pool dollars "
+        f"(across **{len(active)}** active buckets).\n\n"
+        f"{table}{tail_note}\n\n"
+        "See the dashboard for the bar chart and per-bucket heatmaps."
     )
 
 
