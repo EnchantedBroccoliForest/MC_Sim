@@ -391,6 +391,12 @@ def write_report(
 | Winner TV distance (empirical vs prior) | {tv_dist:.4f} |
 | Max relative conservation error | {summary['conservation']['max_relative_error']:.2e} |
 
+*Total-variation (TV) distance measures how far the winners actually drawn
+across all trials drifted from the configured winner prior: 0 means a perfect
+match, 1 means no overlap. Lower is better. The conservation error checks that
+every dollar is accounted for after settlement (agent losses = agent gains +
+house take); it should be ~0 up to floating-point rounding.*
+
 ## What this run is telling you
 
 1. **Modal scoreline = MCI {modal_score} CRY** (wins {modal_freq:.1%} of trials).
@@ -414,14 +420,15 @@ boxes line up, agents are well-calibrated to the winner prior.*
 
 ![Realised payout per unit](plots/realized_payout.png)
 
-*For every cell, the average payout per OT across trials where that cell won.
-This is what a 1-unit stake on each scoreline is worth, conditional on it
-being the winner.*
+*For every cell, the average payout per outcome token (OT) across the trials
+where that cell won. In other words: what a single 1-unit stake on each
+scoreline pays out, given that scoreline turns out to be the winner.*
 
 ![P&L distribution](plots/pnl_distribution.png)
 
-*Left: agent P&L histogram (a fat negative pile + a long positive tail). Right:
-ROI by starting-balance cohort.*
+*Left: histogram of per-agent profit and loss — most agents cluster in a large
+loss-making peak, with a smaller long tail of big winners. Right: median ROI
+broken down by the agent's starting-balance cohort.*
 
 ## Interactive dashboard
 
@@ -434,9 +441,20 @@ panel, and the P&L distribution. Best viewed in a modern browser.
 
 ## Files
 
-- `summary.json` — run parameters and aggregate stats
-- `trials.parquet`, `agent_pnl.parquet`, `terminal_grids.parquet` — tabular data
-- `event_log_sample.parquet` — mint log for the first {cfg.log_events_for_first_k} trials
+Everything below lives in this run's output directory.
+
+- `REPORT.md` — this document.
+- `summary.json` — the full run configuration plus every aggregate statistic
+  quoted above, in machine-readable form.
+- `trials.parquet` — one row per trial: winning cell, total pool, payout per
+  unit, and house economics.
+- `agent_pnl.parquet` — one row per agent per trial: stake, terminal cash,
+  P&L, and ROI.
+- `terminal_grids.parquet` — the final 8×8 token-supply grid for each trial.
+- `event_log_sample.parquet` — the full mint-by-mint log for the first
+  {cfg.log_events_for_first_k} trials (sampled to keep the file small).
+- `dashboard.html` — the interactive version of this report.
+- `plots/` — the static PNG charts embedded above.
 - `meta_trades.parquet`, `meta_trade_summary.csv` — meta-trade leg log (when present)
 """
     (run_dir / "REPORT.md").write_text(md)
