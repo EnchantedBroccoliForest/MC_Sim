@@ -10,6 +10,7 @@ import pytest
 from parimutuel_sim.analytics import AGENT_PNL_COLUMNS, build_agent_pnl_df
 from parimutuel_sim.market import (
     GRID_SIZE,
+    PRICE_SCALE,
     MarketState,
     cost_to_mint,
     marginal_payout,
@@ -24,10 +25,10 @@ from parimutuel_sim.viz import plot_pnl_histogram, plot_roi_vs_balance
 
 
 def test_mint_from_zero():
-    """Minting $D from x=0 yields x = ((7/4)*D)^(4/7) and mcap(x) ≈ D."""
+    """Minting $D from x=0 yields x = ((7/4)*PRICE_SCALE*D)^(4/7) and mcap(x) ≈ D."""
     D = 12.34
     x_new, units = mint_units(0.0, D)
-    expected_x = ((7.0 / 4.0) * D) ** (4.0 / 7.0)
+    expected_x = ((7.0 / 4.0) * PRICE_SCALE * D) ** (4.0 / 7.0)
     assert math.isclose(x_new, expected_x, rel_tol=1e-12)
     assert math.isclose(units, expected_x, rel_tol=1e-12)
     assert math.isclose(mcap(x_new), D, rel_tol=1e-9, abs_tol=1e-12)
@@ -132,7 +133,7 @@ def test_init_seed_range():
     state = MarketState(init_mcap_min=init_min, init_mcap_max=init_max, rng=rng)
     assert state.supply.shape == (GRID_SIZE, GRID_SIZE)
     assert np.all(state.supply > 0)
-    mcaps = (4.0 / 7.0) * state.supply ** (7.0 / 4.0)
+    mcaps = (4.0 / 7.0) * state.supply ** (7.0 / 4.0) / PRICE_SCALE
     assert np.all(mcaps >= init_min - 1e-12)
     assert np.all(mcaps <= init_max + 1e-12)
 
