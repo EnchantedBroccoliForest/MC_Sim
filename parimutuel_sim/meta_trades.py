@@ -118,7 +118,9 @@ def allocate(
     else:
         alloc = {c: cash * (cap / total) for c, cap in zip(cells, caps)}
 
-    keys = list(alloc.keys())
+    # Dump float dust onto a deterministic cell (largest GridIndex) so the
+    # result is independent of the order ``cells`` was passed in.
+    keys = sorted(alloc)
     running = sum(alloc[k] for k in keys[:-1])
     alloc[keys[-1]] = cash - running
     return alloc

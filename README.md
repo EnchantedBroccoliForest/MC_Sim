@@ -2,7 +2,7 @@
 
 Monte Carlo simulation of a 42.space-style dynamic parimutuel market over an
 8×8 grid of scoreline outcomes (MCI vs. CRY, goals `0..6, ≥7`). Agents mint
-outcome tokens against a bonding curve `p(x) = x^(3/4)` until cash runs out;
+outcome tokens against a bonding curve `p(x) = x^(3/4) / 2_000_000` until cash runs out;
 one cell is then drawn as the winner and the entire pool is paid pro-rata to
 holders of the winning OT.
 

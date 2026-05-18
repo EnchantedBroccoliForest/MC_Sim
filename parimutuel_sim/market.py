@@ -1,8 +1,8 @@
 """Bonding-curve market primitives for the parimutuel simulator.
 
-Curve: p(x) = x^(3/4).
-mcap(x) = (4/7) * x^(7/4).
-Inverse-mint: x2 = ( x1^(7/4) + (7/4) * D )^(4/7).
+Curve: p(x) = x^(3/4) / PRICE_SCALE.
+mcap(x) = (4/7) * x^(7/4) / PRICE_SCALE.
+Inverse-mint: x2 = ( x1^(7/4) + (7/4) * PRICE_SCALE * D )^(4/7).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ N_CELLS = GRID_SIZE * GRID_SIZE
 ALPHA = 3.0 / 4.0  # price curve exponent
 EXP_OUT = 7.0 / 4.0  # 1 + alpha
 INV_EXP = 4.0 / 7.0  # 1 / (1 + alpha)
+PRICE_SCALE = 2_000_000.0  # 42.space curve scale: p(x) = x^(3/4) / PRICE_SCALE
 
 # Separate RNG stream constant for seeding the initial grid; XORed with the
 # user-supplied seed so changing agent count doesn't reshuffle the grid.
@@ -27,49 +28,53 @@ MCAP_TOTAL_RESYNC_INTERVAL = 2048
 
 
 def marginal_price(x):
-    """p(x) = x^(3/4). Vectorized."""
+    """p(x) = x^(3/4) / PRICE_SCALE. Vectorized."""
     x = np.asarray(x, dtype=float)
-    return np.power(x, ALPHA, where=x > 0, out=np.zeros_like(x))
+    return np.power(x, ALPHA, where=x > 0, out=np.zeros_like(x)) / PRICE_SCALE
 
 
 def marginal_price_scalar(x: float) -> float:
     """Scalar p(x) helper for inner loops."""
-    return x**ALPHA if x > 0 else 0.0
+    return x**ALPHA / PRICE_SCALE if x > 0 else 0.0
 
 
 def mcap(x):
     """Market cap = total USD ever spent minting this OT."""
     x = np.asarray(x, dtype=float)
-    return (4.0 / 7.0) * np.power(x, EXP_OUT, where=x > 0, out=np.zeros_like(x))
+    return (4.0 / 7.0) * np.power(x, EXP_OUT, where=x > 0, out=np.zeros_like(x)) / PRICE_SCALE
 
 
 def mcap_scalar(x: float) -> float:
     """Scalar market-cap helper for inner loops."""
-    return (4.0 / 7.0) * x**EXP_OUT if x > 0 else 0.0
+    return (4.0 / 7.0) * x**EXP_OUT / PRICE_SCALE if x > 0 else 0.0
 
 
 def marginal_payout(x):
-    """Per-OT display multiplier = mcap(x) / p(x) = (4/7) * x."""
+    """Per-OT display multiplier = mcap(x) / p(x) = (4/7) * x.
+
+    The PRICE_SCALE divisor cancels between mcap and price, so this is
+    independent of the curve scale.
+    """
     return (4.0 / 7.0) * np.asarray(x, dtype=float)
 
 
 def supply_for_mcap(m: float) -> float:
-    """Inverse of mcap: solve (4/7) * x^(7/4) = m for x."""
+    """Inverse of mcap: solve (4/7) * x^(7/4) / PRICE_SCALE = m for x."""
     if m <= 0:
         return 0.0
-    return ((7.0 / 4.0) * m) ** INV_EXP
+    return ((7.0 / 4.0) * PRICE_SCALE * m) ** INV_EXP
 
 
 def cost_to_mint(x1: float, x2: float) -> float:
     """Integral of p from x1 to x2."""
-    return (4.0 / 7.0) * (x2**EXP_OUT - x1**EXP_OUT)
+    return (4.0 / 7.0) * (x2**EXP_OUT - x1**EXP_OUT) / PRICE_SCALE
 
 
 def mint_units(x1: float, dollars: float) -> Tuple[float, float]:
     """Given current supply x1 and $D to spend, return (x2, units_minted)."""
     if dollars <= 0:
         return x1, 0.0
-    x2 = (x1**EXP_OUT + (7.0 / 4.0) * dollars) ** INV_EXP
+    x2 = (x1**EXP_OUT + (7.0 / 4.0) * PRICE_SCALE * dollars) ** INV_EXP
     return x2, x2 - x1
 
 
@@ -121,7 +126,7 @@ class MarketState:
             self.init_mcap = self.rng.uniform(
                 self.init_mcap_min, self.init_mcap_max, size=(GRID_SIZE, GRID_SIZE)
             )
-            self.init_supply = ((7.0 / 4.0) * self.init_mcap) ** INV_EXP
+            self.init_supply = ((7.0 / 4.0) * PRICE_SCALE * self.init_mcap) ** INV_EXP
         self.supply = self.init_supply.copy()
         self.refresh_mcap_cache()
 
